@@ -1,0 +1,64 @@
+# Default-deny: version only source code, documentation, and explicit templates/config.
+*
+
+# Keep repository metadata and project documents.
+!.gitignore
+!*.py
+!*.md
+!requirements.txt
+!new_race_template.json
+!odds_overlay_template.json
+
+# Never version data, trained models, generated outputs, logs, or archives.
+*.sqlite
+*.sqlite3
+*.db
+*.pkl
+*.joblib
+*.log
+*.zip
+*.csv
+*.html
+*.txt
+*.json
+
+# Runtime and tooling artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+.env.*
+.hkjc_live_odds_state.json
+
+# Daily generated input/output files (keep only explicit templates above).
+race_card.json
+prediction.json
+prediction.csv
+odds_overlay.json
+place_odds_overlay.json
+odds_overlay_combined.json
+odds_overlay.meta.json
+
+# Generated reports and test artefacts.
+*_report.json
+*_summary.json
+*_prediction.json
+*_prediction.csv
+*_predictions.csv
+backtest_*.json
+backtest_*.csv
+hardening_*/
+no_odds_test_output/
+odds_helper_live_test/
+odds_place_live_test/
+odds_place_test/
+dual_market_prediction_test/
+hardened_live_odds_test/
+hardened_degraded_prediction/
+
+# Explicitly re-include repository configuration after broad file-type ignores.
+!requirements.txt
+!new_race_template.json
+!odds_overlay_template.json

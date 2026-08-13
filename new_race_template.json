@@ -1,0 +1,23 @@
+{
+  "race": {
+    "race_date": "2026/09/06",
+    "racecourse": "ST",
+    "race_no": 3,
+    "race_class": "第四班",
+    "distance_m": 1200,
+    "surface": "草地",
+    "course_config": "A",
+    "going": "好地"
+  },
+  "runners": [
+    {
+      "horse_no": 1,
+      "horse_name": "請填入官方馬名",
+      "draw": 1,
+      "weight_lbs": 135,
+      "jockey": "請填入官方騎師",
+      "trainer": "請填入官方練馬師",
+      "market_odds": 5.5
+    }
+  ]
+}
