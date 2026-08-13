@@ -165,6 +165,7 @@ def execute_job(job: RaceJob, project_dir: Path, output_root: Path, odds_min_int
     prediction = output_dir / "prediction.json"
     prediction_csv = output_dir / "prediction.csv"
     filter_output = output_dir / "high_probability_filter.json"
+    filter_markdown = output_dir / "pre_race_report.md"
     python = sys.executable
     date_arg = job.date
     outcomes: list[dict[str, Any]] = []
@@ -180,7 +181,8 @@ def execute_job(job: RaceJob, project_dir: Path, output_root: Path, odds_min_int
                      "--model", str(project_dir / "horse_model.pkl"), "--race-card", str(race_card),
                      "--win-odds-overlay", str(win_overlay), "--place-odds-overlay", str(place_overlay),
                      "--output-json", str(prediction), "--output-csv", str(prediction_csv)], 180),
-        ("filter", [python, str(scripts["filter"]), "--prediction", str(prediction), "--output", str(filter_output)], 60),
+        ("filter", [python, str(scripts["filter"]), "--prediction", str(prediction), "--output", str(filter_output),
+                    "--markdown-output", str(filter_markdown)], 60),
     ]
     for name, command, timeout in steps:
         outcome = run_command(command, output_dir, name, timeout)
@@ -193,6 +195,8 @@ def execute_job(job: RaceJob, project_dir: Path, output_root: Path, odds_min_int
         "output_dir": str(output_dir),
         "steps": outcomes,
         "selection_count": filter_payload.get("selection_count", 0),
+        "strategy_selection_counts": filter_payload.get("selection_counts", {}),
+        "markdown_report": str(filter_markdown),
         "whatsapp_direct_link": (filter_payload.get("whatsapp") or {}).get("direct_link"),
         "odds_status": (load_json(odds_meta, {}).get("status") or "unknown"),
     }

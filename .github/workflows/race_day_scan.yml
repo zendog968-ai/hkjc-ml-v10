@@ -1,0 +1,142 @@
+name: V10.1 Race Day 60-Minute Scan
+
+on:
+  schedule:
+    # GitHub Actions scheduled workflows have a five-minute minimum cadence.
+    # github_race_day_gate.py exits unless a configured 60-minute pre-race window is active.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: "Force one scan using the inputs below"
+        required: true
+        default: false
+        type: boolean
+      race_date:
+        description: "YYYY/MM/DD, required when Force one scan is true"
+        required: false
+        type: string
+      racecourse:
+        description: "ST or HV, required when Force one scan is true"
+        required: false
+        type: choice
+        options: [ST, HV]
+      race_no:
+        description: "Race number, required when Force one scan is true"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v10-race-day-scan-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.final.outputs.should_run }}
+      race_date: ${{ steps.final.outputs.race_date }}
+      racecourse: ${{ steps.final.outputs.racecourse }}
+      race_no: ${{ steps.final.outputs.race_no }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gate
+        name: Determine whether a configured race is due
+        shell: bash
+        run: |
+          python3 github_race_day_gate.py \
+            --config race_day_schedule.json \
+            --github-output "$GITHUB_OUTPUT"
+      - id: final
+        name: Select scheduled or manual parameters
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.force_run }}" == "true" ]]; then
+            test -n "${{ inputs.race_date }}"
+            test -n "${{ inputs.racecourse }}"
+            test -n "${{ inputs.race_no }}"
+            {
+              echo "should_run=true"
+              echo "race_date=${{ inputs.race_date }}"
+              echo "racecourse=${{ inputs.racecourse }}"
+              echo "race_no=${{ inputs.race_no }}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "should_run=${{ steps.gate.outputs.should_run }}"
+              echo "race_date=${{ steps.gate.outputs.race_date }}"
+              echo "racecourse=${{ steps.gate.outputs.racecourse }}"
+              echo "race_no=${{ steps.gate.outputs.race_no }}"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+  scan:
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python and browser dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+      - name: Download private model assets from the repository release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v10-assets --repo "$GITHUB_REPOSITORY" \
+            --pattern hkjc_last_season.sqlite --pattern horse_model.pkl --dir .
+          test -s hkjc_last_season.sqlite
+          test -s horse_model.pkl
+      - name: Create per-race output folder
+        id: output
+        run: |
+          OUTPUT_DIR="artifacts/${{ needs.gate.outputs.race_date }}_${{ needs.gate.outputs.racecourse }}_R${{ needs.gate.outputs.race_no }}"
+          OUTPUT_DIR="${OUTPUT_DIR//\//-}"
+          mkdir -p "$OUTPUT_DIR"
+          echo "dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
+      - name: Fetch official race card
+        run: |
+          python fetch_hkjc_racecard.py \
+            --date "${{ needs.gate.outputs.race_date }}" \
+            --racecourse "${{ needs.gate.outputs.racecourse }}" \
+            --race-no "${{ needs.gate.outputs.race_no }}" \
+            --output "${{ steps.output.outputs.dir }}/race_card.json"
+      - name: Fetch public Win and Place odds
+        run: |
+          python fetch_hkjc_live_odds.py \
+            --race-card "${{ steps.output.outputs.dir }}/race_card.json" \
+            --output "${{ steps.output.outputs.dir }}/odds_overlay.json" \
+            --place-output "${{ steps.output.outputs.dir }}/place_odds_overlay.json" \
+            --combined-output "${{ steps.output.outputs.dir }}/odds_overlay_combined.json" \
+            --metadata-output "${{ steps.output.outputs.dir }}/odds_overlay.meta.json" \
+            --min-interval 60
+      - name: Run prediction and dual-strategy filtering
+        run: |
+          python predict.py \
+            --db hkjc_last_season.sqlite --model horse_model.pkl \
+            --race-card "${{ steps.output.outputs.dir }}/race_card.json" \
+            --win-odds-overlay "${{ steps.output.outputs.dir }}/odds_overlay.json" \
+            --place-odds-overlay "${{ steps.output.outputs.dir }}/place_odds_overlay.json" \
+            --output-json "${{ steps.output.outputs.dir }}/prediction.json" \
+            --output-csv "${{ steps.output.outputs.dir }}/prediction.csv"
+          python filter_high_probability.py \
+            --prediction "${{ steps.output.outputs.dir }}/prediction.json" \
+            --output "${{ steps.output.outputs.dir }}/high_probability_filter.json" \
+            --markdown-output "${{ steps.output.outputs.dir }}/pre_race_report.md"
+      - name: Publish report in workflow summary
+        run: cat "${{ steps.output.outputs.dir }}/pre_race_report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload scan artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-pre-race-${{ needs.gate.outputs.race_date }}-${{ needs.gate.outputs.racecourse }}-r${{ needs.gate.outputs.race_no }}
+          path: ${{ steps.output.outputs.dir }}
+          if-no-files-found: error

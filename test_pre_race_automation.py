@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline regression tests for pre-race scheduling and filtering logic."""
+"""Offline regression tests for pre-race scheduling, reports, filtering, and action gate."""
 from __future__ import annotations
 
 import json
@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from filter_high_probability import run as filter_run
+from github_race_day_gate import load_schedule as load_action_schedule, select_due_job
 from pre_race_scheduler import HK_TZ, due_jobs, load_jobs, process
 
 
@@ -17,6 +18,7 @@ def main() -> int:
         root = Path(temp)
         prediction_path = root / "prediction.json"
         filter_path = root / "filter.json"
+        markdown_path = root / "report.md"
         prediction_path.write_text(
             json.dumps(
                 {
@@ -40,15 +42,18 @@ def main() -> int:
             ),
             encoding="utf-8",
         )
-        filtered = filter_run(str(prediction_path), str(filter_path))
+        filtered = filter_run(str(prediction_path), str(filter_path), markdown_output=str(markdown_path))
         assert filtered["selection_count"] == 2
-        strategies = {row["horse_name"]: row["strategy"] for row in filtered["selections"]}
-        assert strategies == {"穩攻甲": "熱門穩攻", "冷門乙": "冷門突襲"}
-        assert filtered["selections"][0]["focus_level"] == "超級焦點"
+        assert filtered["selection_counts"] == {"熱門穩攻": 1, "冷門突襲 / Value Bomb": 1}
+        assert filtered["strategies"]["熱門穩攻"][0]["horse_name"] == "穩攻甲"
+        assert filtered["strategies"]["熱門穩攻"][0]["focus_level"] == "超級焦點"
+        assert filtered["strategies"]["冷門突襲 / Value Bomb"][0]["horse_name"] == "冷門乙"
         link = filtered["whatsapp"]["direct_link"]
         assert link and urlparse(link).netloc == "api.whatsapp.com"
         query = parse_qs(urlparse(link).query)
-        assert query["phone"] == ["85296896832"] and "穩攻甲" in query["text"][0]
+        assert query["phone"] == ["85296896832"] and "穩攻甲" in query["text"][0] and "冷門乙" in query["text"][0]
+        markdown = markdown_path.read_text(encoding="utf-8")
+        assert "## 熱門穩攻" in markdown and "## 冷門突襲 / Value Bomb" in markdown and "WhatsApp" in markdown
 
         config_path = root / "schedule.json"
         config_path.write_text(
@@ -69,7 +74,22 @@ def main() -> int:
         result = process(config_path, root, root / "outputs", state_path, now_due, True, 60)
         assert result["dry_run"] and result["processed"][0]["status"] == "dry_run_due"
         assert not state_path.exists(), "dry run must not write run state"
-        print(json.dumps({"result": "PASS", "filter_selection_count": 2, "due_race": 1}, ensure_ascii=False))
+
+        action_config = root / "action_schedule.json"
+        action_config.write_text(
+            json.dumps(
+                {"timezone": "Asia/Hong_Kong", "trigger_minutes_before": 60, "trigger_window_minutes": 10,
+                 "meeting": {"race_date": "2026/07/15", "racecourse": "HV", "race_start_times": {"1": "18:30"}}},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        action_payload, action_jobs = load_action_schedule(action_config)
+        gate_due = select_due_job(action_payload, action_jobs, datetime(2026, 7, 15, 17, 30, tzinfo=HK_TZ))
+        gate_not_due = select_due_job(action_payload, action_jobs, datetime(2026, 7, 15, 17, 41, tzinfo=HK_TZ))
+        assert gate_due["should_run"] == "true" and gate_due["race_no"] == "1"
+        assert gate_not_due["should_run"] == "false"
+        print(json.dumps({"result": "PASS", "filter_selection_count": 2, "due_race": 1, "github_gate": "PASS"}, ensure_ascii=False))
     return 0
 
 

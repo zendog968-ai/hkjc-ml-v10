@@ -95,6 +95,7 @@ runtime/pre_race/YYYY/MM/DD_ST_R03/
 ├── prediction.json
 ├── prediction.csv
 ├── high_probability_filter.json
+├── pre_race_report.md
 └── racecard.log / odds.log / predict.log / filter.log
 ```
 

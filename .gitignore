@@ -72,3 +72,11 @@ runtime/
 !pre_race_schedule.example.json
 !cron/
 !cron/*.cron
+
+# GitHub Actions current race-day control file (update and commit before each meeting).
+!race_day_schedule.json
+
+# Versioned GitHub Actions workflow.
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml

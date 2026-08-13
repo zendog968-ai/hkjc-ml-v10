@@ -1,0 +1,14 @@
+{
+  "schema_version": "v10_1_github_race_day_schedule_v1",
+  "timezone": "Asia/Hong_Kong",
+  "trigger_minutes_before": 60,
+  "trigger_window_minutes": 10,
+  "meeting": {
+    "race_date": "2026/09/06",
+    "racecourse": "ST",
+    "source_note": "每個賽日前，請按香港賽馬會官方公告填寫第一場及所需場次開跑時間，然後提交此檔至 main。GitHub Actions 會每 5 分鐘檢查一次；此檔例子不代表實際賽期。",
+    "race_start_times": {
+      "1": "13:00"
+    }
+  }
+}
