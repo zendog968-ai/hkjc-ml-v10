@@ -207,3 +207,27 @@ python3 fetch_hkjc_live_odds.py \
 工具每次執行只載入一次公開頁面，並以狀態檔強制兩次請求最少相隔 60 秒。頁面未開售、資料未載入、馬名不對應、結構改變或出現存取限制時，程式會以錯誤結束，且**不會寫入部分 overlay**。`odds_overlay.meta.json` 會記錄抓取時間、來源、寫入筆數與任何未對應馬名。
 
 離線測試可使用 `--html public_odds_fixture.html`；此模式不會發送網絡請求。
+
+
+## V10.1 馬匹裝備變動特徵
+
+香港賽馬會官方馬匹近績表逐場列出「配備」，包括 `TT1`、`BO/TT`、`BO-/TT` 及 `--`。當中 `1` 表示首次使用、`2` 表示重戴、`-` 表示除去。[4] `enrich_hkjc_equipment.py` 會以單線程和保守延遲讀取官方馬匹近績頁，將逐場配備回填至 `starters.equipment` 與可稽核的 `starter_equipment` 表；遇 403／429 會停止而不繞過限制。
+
+```bash
+python3 enrich_hkjc_equipment.py \
+  --db hkjc_last_season.sqlite \
+  --delay-seconds 2.5
+```
+
+| 特徵 | 定義 | 無未來資料處理 |
+|---|---|---|
+| `is_first_time_blinker` | 當場官方配備為 `B1` 或 `BO1` 時為 1。 | 只讀取該場排位表已公布配備。 |
+| `is_equip_added` | 相對上一正式出賽新增至少一種基礎裝備。 | 沒有已知上仗配備時為 0。 |
+| `equipment_changed` | 當前有效裝備集合與上一正式出賽不同。 | 僅比較開跑前已知的前一場資料。 |
+| `trainer_equip_change_roi_pre` | 同馬房近兩年裝備變動馬的平滑勝率相對馬房基準。 | 每列只累積較早賽日資料，並限制在 0.5–1.5。 |
+
+> `trainer_equip_change_roi_pre` 為相容性名稱。由於資料庫並無逐注投注回報，它是**平滑勝率權重**，不是字面投注 ROI，也不代表回報保證。
+
+完成增量賽果抓取後，`monthly_update.py` 會預設重查官方配備、重建特徵及重訓模型。只有本機快速測試才應使用 `--skip-equipment`；否則裝備資料缺漏會被模型降級為中性訊號。
+
+[4] [香港賽馬會：官方馬匹近績配備欄示例](https://racing.hkjc.com/zh-hk/local/information/horse?horseid=HK_2025_L083)

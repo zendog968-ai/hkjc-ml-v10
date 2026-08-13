@@ -13,9 +13,12 @@ import math
 import sqlite3
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from statistics import mean
 from typing import Iterable, Optional
+
+from equipment_features import equipment_feature_flags
 
 WITHDRAWN = {"WV", "WV-A", "WX-A", "WXNR"}
 INITIAL_ELO = 1500.0
@@ -34,7 +37,10 @@ FEATURE_COLUMNS = (
     "condition_win_rate_pre", "recent_finish_fraction_pre", "recent_margin_pre", "recent_win_rate_pre",
     "closing400_proxy_pre", "closing400_trend_pre", "elo_vs_field", "jockey_elo_vs_field",
     "track_bias_pre", "track_bias_sample_pre", "class_level", "class_drop_from_last_pre",
-    "class_weight_interaction_pre", "target_win", "target_top3", "finish_pos", "finish_pos_text", "actual_closing400_proxy",
+    "class_weight_interaction_pre", "equipment_raw", "previous_equipment_raw_pre",
+    "is_first_time_blinker", "is_equip_added", "equipment_changed", "equipment_history_known_pre",
+    "trainer_equip_change_roi_pre", "trainer_equip_change_sample_pre",
+    "target_win", "target_top3", "finish_pos", "finish_pos_text", "actual_closing400_proxy",
     "source_version",
 )
 INSERT_FEATURE_SQL = (
@@ -52,6 +58,7 @@ class HistoricalRun:
     class_level: int
     win: int
     top3: int
+    equipment_raw: str | None
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -90,6 +97,22 @@ def race_closing_proxy(finish_pos: int, field_size: int, margin_lengths: float, 
 
 def smoothed_rate(wins: float, starts: float, baseline: float, strength: float) -> float:
     return (wins + baseline * strength) / (starts + strength)
+
+
+def trainer_equipment_change_weight(
+    change_wins: int, change_starts: int, trainer_wins: int, trainer_starts: int
+) -> float:
+    """Return a bounded, leakage-safe trainer equipment-change win-rate weight.
+
+    The name retains the requested ROI terminology for downstream compatibility, but the
+    source data holds winners rather than individual bet returns. It is therefore a
+    smoothed win-rate ratio against the trainer's own pre-race baseline, over a rolling
+    two-year window. Non-change runners receive neutral 1.0 in the caller.
+    """
+    baseline = smoothed_rate(trainer_wins, trainer_starts, 0.08, 20.0)
+    changed_rate = smoothed_rate(change_wins, change_starts, baseline, 12.0)
+    ratio = changed_rate / max(baseline, 0.02)
+    return min(1.5, max(0.5, ratio))
 
 
 def shrunk_track_bias(
@@ -170,8 +193,21 @@ def recent_win_rate(history: deque[HistoricalRun], n: int = 5) -> float:
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
+    # Equipment enrichment may run separately; ensure the feature builder remains
+    # backward-compatible with pre-equipment databases and produces neutral flags.
+    starter_columns = {row[1] for row in conn.execute("PRAGMA table_info(starters)")}
+    if "equipment" not in starter_columns:
+        conn.execute("ALTER TABLE starters ADD COLUMN equipment TEXT")
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS starter_equipment (
+            race_date TEXT NOT NULL, racecourse TEXT NOT NULL, race_no INTEGER NOT NULL,
+            horse_name TEXT NOT NULL, horse_code TEXT, equipment_raw TEXT,
+            source_url TEXT NOT NULL DEFAULT '', fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (race_date, racecourse, race_no, horse_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_starter_equipment_horse ON starter_equipment(horse_code, race_date);
+
         CREATE TABLE IF NOT EXISTS elo_feature_store (
             race_date TEXT NOT NULL,
             racecourse TEXT NOT NULL,
@@ -209,6 +245,14 @@ def create_schema(conn: sqlite3.Connection) -> None:
             class_level INTEGER NOT NULL DEFAULT 6,
             class_drop_from_last_pre REAL NOT NULL DEFAULT 0.0,
             class_weight_interaction_pre REAL NOT NULL DEFAULT 0.0,
+            equipment_raw TEXT,
+            previous_equipment_raw_pre TEXT,
+            is_first_time_blinker INTEGER NOT NULL DEFAULT 0,
+            is_equip_added INTEGER NOT NULL DEFAULT 0,
+            equipment_changed INTEGER NOT NULL DEFAULT 0,
+            equipment_history_known_pre INTEGER NOT NULL DEFAULT 0,
+            trainer_equip_change_roi_pre REAL NOT NULL DEFAULT 1.0,
+            trainer_equip_change_sample_pre INTEGER NOT NULL DEFAULT 0,
             target_win INTEGER NOT NULL,
             target_top3 INTEGER NOT NULL,
             finish_pos INTEGER NOT NULL,
@@ -239,6 +283,14 @@ def create_schema(conn: sqlite3.Connection) -> None:
         "class_level": "INTEGER NOT NULL DEFAULT 6",
         "class_drop_from_last_pre": "REAL NOT NULL DEFAULT 0.0",
         "class_weight_interaction_pre": "REAL NOT NULL DEFAULT 0.0",
+        "equipment_raw": "TEXT",
+        "previous_equipment_raw_pre": "TEXT",
+        "is_first_time_blinker": "INTEGER NOT NULL DEFAULT 0",
+        "is_equip_added": "INTEGER NOT NULL DEFAULT 0",
+        "equipment_changed": "INTEGER NOT NULL DEFAULT 0",
+        "equipment_history_known_pre": "INTEGER NOT NULL DEFAULT 0",
+        "trainer_equip_change_roi_pre": "REAL NOT NULL DEFAULT 1.0",
+        "trainer_equip_change_sample_pre": "INTEGER NOT NULL DEFAULT 0",
     }
     for column, definition in migrations.items():
         if column not in existing:
@@ -262,13 +314,16 @@ def fetch_races(conn: sqlite3.Connection) -> Iterable[sqlite3.Row]:
 def fetch_runners(conn: sqlite3.Connection, race: sqlite3.Row) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT horse_name, horse_code, jockey, trainer, weight_lbs, draw,
-               margin_lengths, running_positions, finish_pos, finish_pos_text
-        FROM starters
-        WHERE race_date=? AND racecourse=? AND race_no=?
-          AND horse_no IS NOT NULL AND finish_pos IS NOT NULL
-          AND finish_pos_text NOT IN ('WV','WV-A','WX-A','WXNR')
-        ORDER BY horse_no
+        SELECT s.horse_name, s.horse_code, s.jockey, s.trainer, s.weight_lbs, s.draw,
+               s.margin_lengths, s.running_positions, s.finish_pos, s.finish_pos_text,
+               COALESCE(e.equipment_raw, s.equipment) AS equipment
+        FROM starters AS s
+        LEFT JOIN starter_equipment AS e
+          ON e.race_date=s.race_date AND e.racecourse=s.racecourse AND e.race_no=s.race_no AND e.horse_name=s.horse_name
+        WHERE s.race_date=? AND s.racecourse=? AND s.race_no=?
+          AND s.horse_no IS NOT NULL AND s.finish_pos IS NOT NULL
+          AND s.finish_pos_text NOT IN ('WV','WV-A','WX-A','WXNR')
+        ORDER BY s.horse_no
         """,
         (race["race_date"], race["racecourse"], race["race_no"]),
     ).fetchall()
@@ -286,6 +341,8 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
     horse_history: dict[str, deque[HistoricalRun]] = defaultdict(lambda: deque(maxlen=12))
     horse_stats: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])  # starts,wins,top3
     trainer_stats: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # starts,wins
+    # Per trainer: (race_date, equipment_changed, win), trimmed to prior 730 days.
+    trainer_equip_history: dict[str, deque[tuple[date, int, int]]] = defaultdict(deque)
     condition_stats: dict[tuple[str, str, int, str], list[int]] = defaultdict(lambda: [0, 0])
     # starts, wins, and expected wins (sum of 1/field size) by course/going/distance/draw band.
     track_bias_stats: dict[tuple[str, str, str, str, str, str], list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
@@ -310,6 +367,7 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
         pre_jockey_field_mean = mean(jockey_ratings)
         race_context = (race["racecourse"], race["distance_m"], race["surface"])
         current_class_level = class_level(race["race_class"])
+        race_day = date.fromisoformat(str(race["race_date"]))
         race_records: list[dict[str, object]] = []
 
         for index, row in enumerate(runners):
@@ -321,10 +379,19 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
             starts, wins, top3 = horse_stats[horse]
             condition_starts, condition_wins = condition_stats[context_key]
             trainer_starts, trainer_wins = trainer_stats[trainer]
+            # Only prior two years are available to this row; never use same-race results.
+            trainer_history = trainer_equip_history[trainer]
+            cutoff = race_day - timedelta(days=730)
+            while trainer_history and trainer_history[0][0] < cutoff:
+                trainer_history.popleft()
+            change_starts = sum(entry[1] for entry in trainer_history)
+            change_wins = sum(entry[2] for entry in trainer_history if entry[1])
             finish_pos = int(row["finish_pos"])
             margin = safe_float(row["margin_lengths"], 20.0)
             actual_close = race_closing_proxy(finish_pos, field_size, margin, row["running_positions"])
             prior_weight = history[-1].weight_lbs if history else None
+            previous_equipment = history[-1].equipment_raw if history else None
+            equipment_flags = equipment_feature_flags(row["equipment"], previous_equipment, bool(history and previous_equipment is not None))
             prior_class_level = history[-1].class_level if history else current_class_level
             class_drop = current_class_level - prior_class_level
             weight = safe_float(row["weight_lbs"], 0.0)
@@ -359,6 +426,14 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
                 "class_level": current_class_level,
                 "class_drop_from_last_pre": class_drop,
                 "class_weight_interaction_pre": class_drop * weight_delta,
+                "equipment_raw": row["equipment"],
+                "previous_equipment_raw_pre": previous_equipment,
+                **equipment_flags,
+                "trainer_equip_change_roi_pre": (
+                    trainer_equipment_change_weight(change_wins, change_starts, trainer_wins, trainer_starts)
+                    if equipment_flags["equipment_changed"] else 1.0
+                ),
+                "trainer_equip_change_sample_pre": change_starts,
             }
             batch.append(
                 (
@@ -373,8 +448,12 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
                     features["recent_margin_pre"], features["recent_win_rate_pre"], features["closing400_proxy_pre"],
                     features["closing400_trend_pre"], features["elo_vs_field"], features["jockey_elo_vs_field"],
                     features["track_bias_pre"], features["track_bias_sample_pre"], features["class_level"],
-                    features["class_drop_from_last_pre"], features["class_weight_interaction_pre"], int(finish_pos == 1), int(finish_pos <= 3), finish_pos, row["finish_pos_text"], actual_close,
-                    "elo_features_v10_1_hardened",
+                    features["class_drop_from_last_pre"], features["class_weight_interaction_pre"],
+                    features["equipment_raw"], features["previous_equipment_raw_pre"],
+                    features["is_first_time_blinker"], features["is_equip_added"], features["equipment_changed"], features["equipment_history_known_pre"],
+                    features["trainer_equip_change_roi_pre"], features["trainer_equip_change_sample_pre"],
+                    int(finish_pos == 1), int(finish_pos <= 3), finish_pos, row["finish_pos_text"], actual_close,
+                    "elo_features_v10_1_equipment",
                 )
             )
             race_records.append(
@@ -391,6 +470,9 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
                     "jockey_rating": jockey_elo[jockey],
                     "condition_rating": condition_elo[context_key],
                     "track_key": track_key,
+                    "race_day": race_day,
+                    "equipment_raw": row["equipment"],
+                    "equipment_changed": equipment_flags["equipment_changed"],
                 }
             )
 
@@ -415,6 +497,7 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
                     class_level=current_class_level,
                     win=int(finish_pos == 1),
                     top3=int(finish_pos <= 3),
+                    equipment_raw=record["equipment_raw"],
                 )
             )
             horse_stats[horse][0] += 1
@@ -422,6 +505,7 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
             horse_stats[horse][2] += int(finish_pos <= 3)
             trainer_stats[trainer][0] += 1
             trainer_stats[trainer][1] += int(finish_pos == 1)
+            trainer_equip_history[trainer].append((record["race_day"], int(record["equipment_changed"]), int(finish_pos == 1)))
             condition_stats[record["context_key"]][0] += 1
             condition_stats[record["context_key"]][1] += int(finish_pos == 1)
             track_bias_stats[record["track_key"]][0] += 1.0
@@ -462,10 +546,10 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
         "races_skipped": skipped_races,
         "horse_count": len(horse_elo),
         "jockey_count": len(jockey_elo),
-        "source_version": "elo_features_v10_1_hardened",
+        "source_version": "elo_features_v10_1_equipment",
         "track_bias_prior_runners": TRACK_BIAS_PRIOR_RUNNERS,
         "track_bias_max_deviation": TRACK_BIAS_MAX_DEVIATION,
-        "note": "closing400_proxy is derived from official running positions and margins; it is not a measured individual 400m sectional time. track_bias_pre uses expected-win smoothing, sample-reliability shrinkage toward 1.0, and a bounded deviation for the exact course configuration, going, distance band and draw band.",
+        "note": "closing400_proxy is derived from official running positions and margins; it is not a measured individual 400m sectional time. track_bias_pre uses expected-win smoothing, sample-reliability shrinkage toward 1.0, and a bounded deviation. Equipment flags use official gear records only from prior starts; trainer_equip_change_roi_pre is a bounded two-year smoothed win-rate weight, not literal betting ROI.",
     }
     Path(report_path).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     conn.close()

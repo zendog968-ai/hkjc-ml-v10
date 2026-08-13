@@ -37,6 +37,7 @@ def main() -> int:
     parser.add_argument("--end-date", default=date.today().isoformat(), help="更新至 YYYY-MM-DD")
     parser.add_argument("--start-date", help="可選：指定 YYYY-MM-DD；預設為資料庫最後賽日的翌日")
     parser.add_argument("--skip-fetch", action="store_true", help="只重建特徵及重訓模型")
+    parser.add_argument("--skip-equipment", action="store_true", help="略過官方馬匹近績配備回填（不建議；裝備特徵會降級）")
     args = parser.parse_args()
     db_path = Path(args.db)
     end_date = date.fromisoformat(args.end_date)
@@ -51,6 +52,10 @@ def main() -> int:
             "--start-date", start_date.isoformat(), "--end-date", end_date.isoformat(),
             "--delay-min", "1.5", "--delay-max", "2.3", "--cooldown-every", "20", "--cooldown-seconds", "20",
         ])
+    if not args.skip_equipment:
+        # Existing horses may have new starts, so monthly refresh intentionally rechecks
+        # official form pages with the enrichment script's conservative delay.
+        run([sys.executable, "enrich_hkjc_equipment.py", "--db", args.db, "--delay-seconds", "2.5", "--force"])
     run([sys.executable, "normalize_results.py", "--db", args.db, "--csv", args.csv])
     run([sys.executable, "build_elo_features.py", "--db", args.db, "--report", "elo_feature_report.json"])
     run([

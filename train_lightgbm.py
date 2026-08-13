@@ -25,7 +25,9 @@ NUMERIC_FEATURES = [
     "recent_finish_fraction_pre", "recent_margin_pre", "recent_win_rate_pre",
     "closing400_proxy_pre", "closing400_trend_pre", "elo_vs_field", "jockey_elo_vs_field",
     "track_bias_pre", "track_bias_sample_pre", "class_level", "class_drop_from_last_pre",
-    "class_weight_interaction_pre",
+    "class_weight_interaction_pre", "is_first_time_blinker", "is_equip_added",
+    "equipment_changed", "equipment_history_known_pre",
+    "trainer_equip_change_roi_pre", "trainer_equip_change_sample_pre",
 ]
 CATEGORICAL_FEATURES = ["racecourse", "race_class", "surface", "course_config", "going"]
 ALL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
@@ -163,9 +165,9 @@ def train(db_path: str, model_path: str, report_path: str, predictions_path: str
         "roc_auc": float(roc_auc_score(y_test, test_calibrated)),
     }
     report = {
-        "model": "HKJC V10.1 LightGBM hardened v1",
+        "model": "HKJC V10.1 LightGBM equipment v1",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "feature_version": "elo_features_v10_1_hardened",
+        "feature_version": "elo_features_v10_1_equipment",
         "target": "target_win",
         "feature_count_after_encoding": len(feature_names),
         "best_iteration": int(model.best_iteration_ or model.n_estimators),
@@ -185,6 +187,8 @@ def train(db_path: str, model_path: str, report_path: str, predictions_path: str
             "市場賠率不會進入模型訓練，僅在預測時用於比較模型概率與市場隱含機率。",
             "跑道偏差為同一賽道設定、場地狀況、路程組別及內中外檔的歷史先驗；採預期勝率平滑、樣本可靠度收縮至 1.0 及 ±0.25 邊界，並不保證當日偏差持續存在。",
             "班次變化以相鄰兩仗的香港班次級別計算；新馬或非標準班次使用中性級別處理。",
+            "裝備特徵來自香港賽馬會官方排位及馬匹近績配備欄。首次眼罩、任何新增配備及配備變動均只使用該場之前的資料；未知歷史採中性值。",
+            "trainer_equip_change_roi_pre 是近兩年裝備變動馬的平滑勝率相對馬房基準權重，並非按投注派彩計算的字面 ROI；權重設有 0.5 至 1.5 邊界。",
         ],
     }
     bundle = {
@@ -194,7 +198,7 @@ def train(db_path: str, model_path: str, report_path: str, predictions_path: str
         "numeric_features": NUMERIC_FEATURES,
         "categorical_features": CATEGORICAL_FEATURES,
         "all_features": ALL_FEATURES,
-        "feature_version": "elo_features_v10_1_hardened",
+        "feature_version": "elo_features_v10_1_equipment",
         "report": report,
     }
     joblib.dump(bundle, model_path)

@@ -54,7 +54,7 @@ def header_map(table: Tag) -> dict[str, int]:
         if len(cells) > len(best):
             best = cells
     mapping: dict[str, int] = {}
-    targets = {"horse_no": "馬號", "horse_name": "馬名", "jockey": "騎師", "trainer": "練馬師", "weight_lbs": "負磅", "draw": "檔位"}
+    targets = {"horse_no": "馬號", "horse_name": "馬名", "jockey": "騎師", "trainer": "練馬師", "weight_lbs": "負磅", "draw": "檔位", "equipment": "配備"}
     for field, token in targets.items():
         for index, label in enumerate(best):
             if token in label:
@@ -130,6 +130,8 @@ def fetch(date: str, racecourse: str, race_no: int, output: str, odds_overlay: O
             "horse_no": int(horse_no), "horse_name": name,
             "draw": int(draw), "weight_lbs": float(weight),
             "jockey": normalize(cells[mapping["jockey"]]), "trainer": normalize(cells[mapping["trainer"]]),
+            # Some historical or exceptional cards omit the public equipment column.
+            "equipment": normalize(cells[mapping["equipment"]]) if "equipment" in mapping and len(cells) > mapping["equipment"] else None,
         }
         if name in odds:
             runner["market_odds"] = odds[name]

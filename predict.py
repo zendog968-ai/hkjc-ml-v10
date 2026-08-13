@@ -25,8 +25,9 @@ import pandas as pd
 
 from build_elo_features import (
     INITIAL_CLOSING, INITIAL_ELO, class_level, draw_band,
-    race_closing_proxy, smoothed_rate,
+    race_closing_proxy, smoothed_rate, trainer_equipment_change_weight,
 )
+from equipment_features import equipment_feature_flags
 
 WITHDRAWN = {"WV", "WV-A", "WX-A", "WXNR"}
 PLACE_SIMULATION_BATCH_SIZE = 25_000
@@ -50,6 +51,7 @@ def load_card(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         "race_class": str(race.get("race_class") or "未知"),
         "course_config": str(race.get("course_config") or "未知"),
         "going": str(race.get("going") or "未知"),
+        "race_date": str(race.get("race_date") or ""),
     }
     runners = payload.get("runners", [])
     if not 2 <= len(runners) <= 20:
@@ -73,10 +75,12 @@ def history_rows(conn: sqlite3.Connection, horse: str) -> list[sqlite3.Row]:
     return conn.execute(
         """
         SELECT s.finish_pos, s.margin_lengths, s.weight_lbs, s.running_positions, r.race_class,
+               COALESCE(e.equipment_raw, s.equipment) AS equipment,
                (SELECT COUNT(*) FROM starters sx WHERE sx.race_date=s.race_date AND sx.racecourse=s.racecourse
                  AND sx.race_no=s.race_no AND sx.finish_pos IS NOT NULL AND sx.finish_pos_text NOT IN ('WV','WV-A','WX-A','WXNR')) AS field_size
         FROM starters AS s
         JOIN races AS r ON r.race_date=s.race_date AND r.racecourse=s.racecourse AND r.race_no=s.race_no
+        LEFT JOIN starter_equipment AS e ON e.race_date=s.race_date AND e.racecourse=s.racecourse AND e.race_no=s.race_no AND e.horse_name=s.horse_name
         WHERE s.horse_name=? AND r.race_status='completed' AND s.finish_pos IS NOT NULL
           AND s.finish_pos_text NOT IN ('WV','WV-A','WX-A','WXNR')
         ORDER BY s.race_date DESC, s.race_no DESC
@@ -124,6 +128,37 @@ def trainer_rate(conn: sqlite3.Connection, trainer: str) -> tuple[int, int]:
         (trainer,),
     ).fetchone()
     return int(row[0] or 0), int(row[1] or 0)
+
+
+def trainer_equipment_change_stats(conn: sqlite3.Connection, trainer: str, before_date: str) -> tuple[int, int]:
+    """Count prior two-year trainer equipment-change starts/wins from official history."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.horse_name, s.race_date, s.race_no, s.finish_pos,
+                   COALESCE(e.equipment_raw, s.equipment) AS equipment
+            FROM starters AS s
+            JOIN races AS r ON r.race_date=s.race_date AND r.racecourse=s.racecourse AND r.race_no=s.race_no
+            LEFT JOIN starter_equipment AS e ON e.race_date=s.race_date AND e.racecourse=s.racecourse AND e.race_no=s.race_no AND e.horse_name=s.horse_name
+            WHERE r.race_status='completed' AND s.trainer=? AND s.finish_pos IS NOT NULL
+              AND s.finish_pos_text NOT IN ('WV','WV-A','WX-A','WXNR')
+              AND (?='' OR s.race_date < ?)
+            ORDER BY s.horse_name, s.race_date, s.race_no
+            """,
+            (trainer, before_date, before_date),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0, 0
+    prior_by_horse: dict[str, object] = {}
+    starts = wins = 0
+    for row in rows:
+        previous = prior_by_horse.get(str(row["horse_name"]))
+        flags = equipment_feature_flags(row["equipment"], previous, previous is not None)
+        if flags["equipment_changed"]:
+            starts += 1
+            wins += int(row["finish_pos"] == 1)
+        prior_by_horse[str(row["horse_name"])] = row["equipment"]
+    return starts, wins
 
 
 def track_bias_summary(conn: sqlite3.Connection, race: dict[str, Any]) -> dict[str, tuple[int, float]]:
@@ -181,6 +216,9 @@ def make_features(conn: sqlite3.Connection, race: dict[str, Any], runners: list[
         closing_trend = (mean(closings[:3]) - mean(closings[:6])) if len(closings) >= 3 else 0.0
         last_weight = float(history[0]["weight_lbs"]) if history and history[0]["weight_lbs"] is not None else None
         prior_class = class_level(history[0]["race_class"]) if history else current_class
+        previous_equipment = history[0]["equipment"] if history else None
+        equipment_flags = equipment_feature_flags(runner.get("equipment"), previous_equipment, bool(history and previous_equipment is not None))
+        equip_change_starts, equip_change_wins = trainer_equipment_change_stats(conn, trainer, race["race_date"])
         class_drop = current_class - prior_class
         weight_delta = (float(runner["weight_lbs"]) - last_weight) if last_weight is not None else 0.0
         runner_draw_band = draw_band(int(runner["draw"]), field_size)
@@ -202,6 +240,12 @@ def make_features(conn: sqlite3.Connection, race: dict[str, Any], runners: list[
                 "jockey_elo_vs_field": jockey_elo - jockey_mean, "track_bias_pre": track_bias,
                 "track_bias_sample_pre": track_sample, "class_level": current_class,
                 "class_drop_from_last_pre": class_drop, "class_weight_interaction_pre": class_drop * weight_delta,
+                "is_first_time_blinker": equipment_flags["is_first_time_blinker"],
+                "is_equip_added": equipment_flags["is_equip_added"],
+                "equipment_changed": equipment_flags["equipment_changed"],
+                "equipment_history_known_pre": equipment_flags["equipment_history_known_pre"],
+                "trainer_equip_change_roi_pre": (trainer_equipment_change_weight(equip_change_wins, equip_change_starts, trainer_wins, trainer_starts) if equipment_flags["equipment_changed"] else 1.0),
+                "trainer_equip_change_sample_pre": equip_change_starts,
                 "racecourse": race["racecourse"], "race_class": race["race_class"], "surface": race["surface"],
                 "course_config": race["course_config"], "going": race["going"],
             }
@@ -211,6 +255,11 @@ def make_features(conn: sqlite3.Connection, race: dict[str, Any], runners: list[
                 "horse_name": horse, "historical_starts": starts, "condition_starts": cond_starts,
                 "horse_elo": horse_elo, "jockey_elo": jockey_elo, "closing400_proxy": closing_pre,
                 "track_bias": track_bias, "track_bias_sample": track_sample, "class_drop_from_last": class_drop,
+                "equipment": runner.get("equipment"), "previous_equipment": previous_equipment,
+                "is_first_time_blinker": equipment_flags["is_first_time_blinker"], "is_equip_added": equipment_flags["is_equip_added"],
+                "equipment_changed": equipment_flags["equipment_changed"],
+                "trainer_equip_change_roi": (trainer_equipment_change_weight(equip_change_wins, equip_change_starts, trainer_wins, trainer_starts) if equipment_flags["equipment_changed"] else 1.0),
+                "trainer_equip_change_sample": equip_change_starts,
                 "data_warning": "樣本不足" if (cond_starts < 2 or track_sample < 12) else "樣本充足",
             }
         )
@@ -381,7 +430,13 @@ def predict(
                 "horse_elo": audit["horse_elo"], "jockey_elo": audit["jockey_elo"],
                 "closing400_proxy": audit["closing400_proxy"], "track_bias": audit["track_bias"],
                 "track_bias_sample": audit["track_bias_sample"], "class_drop_from_last": audit["class_drop_from_last"],
+                "equipment": audit["equipment"], "previous_equipment": audit["previous_equipment"],
+                "is_first_time_blinker": audit["is_first_time_blinker"], "is_equip_added": audit["is_equip_added"],
+                "equipment_changed": audit["equipment_changed"],
+                "trainer_equip_change_roi": audit["trainer_equip_change_roi"], "trainer_equip_change_sample": audit["trainer_equip_change_sample"],
                 "data_warning": audit["data_warning"],
+                # `suggestion` remains the backward-compatible Win-market label.
+                "suggestion": label_suggestion(float(win_prob), win_ev, audit["historical_starts"], audit["condition_starts"], "市場"),
                 "win_suggestion": label_suggestion(float(win_prob), win_ev, audit["historical_starts"], audit["condition_starts"], "獨贏"),
                 "place_suggestion": label_suggestion(float(place_prob), place_ev, audit["historical_starts"], audit["condition_starts"], "位置"),
             }
