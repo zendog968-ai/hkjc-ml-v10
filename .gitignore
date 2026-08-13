@@ -62,3 +62,13 @@ hardened_degraded_prediction/
 !requirements.txt
 !new_race_template.json
 !odds_overlay_template.json
+
+# Pre-race automation runtime artefacts and per-meeting schedule.
+pre_race_schedule.json
+runtime/
+*.lock
+
+# Versioned deployment examples.
+!pre_race_schedule.example.json
+!cron/
+!cron/*.cron

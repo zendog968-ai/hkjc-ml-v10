@@ -1,0 +1,15 @@
+{
+  "schema_version": "v10_1_pre_race_schedule_v1",
+  "timezone": "Asia/Hong_Kong",
+  "trigger_minutes_before": 15,
+  "meeting": {
+    "race_date": "2026/09/06",
+    "racecourse": "ST",
+    "source_note": "請在賽日前按香港賽馬會官方公布的開跑時間填寫。只保留當天實際開跑的場次；如有延遲或取消，請更新此檔。",
+    "race_start_times": {
+      "1": "13:00",
+      "2": "13:35",
+      "3": "14:05"
+    }
+  }
+}

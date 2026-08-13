@@ -1,0 +1,8 @@
+# V10.1 pre-race automation — install with: crontab /opt/hkjc-v10/cron/v10-pre-race.cron
+# Replace /opt/hkjc-v10 and /var/log/hkjc-v10 with your actual server paths.
+# This runs every minute; pre_race_scheduler.py executes a race workflow only once,
+# inside the configured 15-minute pre-race window, and uses an internal state/lock file.
+SHELL=/bin/bash
+PATH=/opt/hkjc-v10/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+* * * * * flock -n /tmp/hkjc-v10-pre-race.cron.lock /opt/hkjc-v10/.venv/bin/python /opt/hkjc-v10/pre_race_scheduler.py --config /opt/hkjc-v10/pre_race_schedule.json --project-dir /opt/hkjc-v10 --output-root /opt/hkjc-v10/runtime/pre_race --state-file /opt/hkjc-v10/runtime/pre_race_state.json --odds-min-interval 60 >> /var/log/hkjc-v10/pre_race_scheduler.log 2>&1
