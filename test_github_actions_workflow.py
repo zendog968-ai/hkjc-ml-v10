@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static validation for the V10.1 GitHub Actions race-day workflow."""
+"""Static validation for the V10.2 GitHub Actions race-day workflow."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +9,7 @@ import yaml
 
 REQUIRED_SNIPPETS = (
     "github_race_day_gate.py",
+    "enrich_hkjc_new_horse_priors.py",
     "fetch_hkjc_racecard.py",
     "fetch_hkjc_live_odds.py",
     "predict.py",
@@ -24,7 +25,7 @@ def main() -> int:
     path = Path(".github/workflows/race_day_scan.yml")
     source = path.read_text(encoding="utf-8")
     workflow = yaml.safe_load(source)
-    assert workflow["name"] == "V10.1 Race Day 60-Minute Scan"
+    assert workflow["name"] == "V10.2 Race Day 60-Minute Scan"
     assert "jobs" in workflow and {"gate", "scan"}.issubset(workflow["jobs"])
     assert all(snippet in source for snippet in REQUIRED_SNIPPETS)
     scan = workflow["jobs"]["scan"]

@@ -80,3 +80,9 @@ runtime/
 !.github/
 !.github/workflows/
 !.github/workflows/*.yml
+# V10.2 local regression outputs
+v102_filter_test.md
+v102_*_test.json
+v102_*_test.csv
+v102_place_validation.json
+v102_scheduler_test/

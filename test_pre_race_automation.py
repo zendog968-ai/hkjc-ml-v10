@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from filter_high_probability import run as filter_run
 from github_race_day_gate import load_schedule as load_action_schedule, select_due_job
-from pre_race_scheduler import HK_TZ, due_jobs, load_jobs, process
+from pre_race_scheduler import HK_TZ, due_stages, load_jobs, process
 
 
 def main() -> int:
@@ -27,7 +27,8 @@ def main() -> int:
                         {"horse_name": "穩攻甲", "rank": 1, "draw": 2, "jockey": "騎師甲", "trainer": "練馬師甲",
                          "predicted_win_probability": 0.11, "predicted_place_probability": 0.91,
                          "market_odds": 4.5, "place_market_odds": 1.8, "ev_per_unit": -0.505,
-                         "place_ev_per_unit": 0.638, "data_warning": "樣本充足"},
+                         "place_ev_per_unit": 0.638, "odds_drop_ratio": -0.25, "gate_money_drop_flag": True,
+                         "market_movement_label": "🔥 閘前資金落飛", "data_warning": "樣本充足"},
                         {"horse_name": "冷門乙", "rank": 4, "draw": 9, "jockey": "騎師乙", "trainer": "練馬師乙",
                          "predicted_win_probability": 0.085, "predicted_place_probability": 0.81,
                          "market_odds": 12.0, "place_market_odds": 3.6, "ev_per_unit": 0.02,
@@ -53,26 +54,28 @@ def main() -> int:
         query = parse_qs(urlparse(link).query)
         assert query["phone"] == ["85296896832"] and "穩攻甲" in query["text"][0] and "冷門乙" in query["text"][0]
         markdown = markdown_path.read_text(encoding="utf-8")
-        assert "## 熱門穩攻" in markdown and "## 冷門突襲 / Value Bomb" in markdown and "WhatsApp" in markdown
+        assert "## 熱門穩攻" in markdown and "## 冷門突襲 / Value Bomb" in markdown and "WhatsApp" in markdown and "閘前資金落飛" in markdown
 
         config_path = root / "schedule.json"
         config_path.write_text(
             json.dumps(
-                {"timezone": "Asia/Hong_Kong", "trigger_minutes_before": 15,
+                {"timezone": "Asia/Hong_Kong", "snapshot_minutes_before": [15, 5],
                  "meeting": {"race_date": "2026/07/15", "racecourse": "HV",
                              "race_start_times": {"1": "18:30", "2": "19:05"}}},
                 ensure_ascii=False,
             ),
             encoding="utf-8",
         )
-        trigger, jobs = load_jobs(config_path)
-        now_due = datetime(2026, 7, 15, 18, 15, 40, tzinfo=HK_TZ)
+        offsets, jobs = load_jobs(config_path)
+        now_t15 = datetime(2026, 7, 15, 18, 15, 40, tzinfo=HK_TZ)
+        now_t5 = datetime(2026, 7, 15, 18, 25, 0, tzinfo=HK_TZ)
         now_not_due = datetime(2026, 7, 15, 18, 16, 0, tzinfo=HK_TZ)
-        assert trigger == 15 and [job.race_no for job in due_jobs(jobs, trigger, now_due)] == [1]
-        assert not due_jobs(jobs, trigger, now_not_due)
+        assert offsets == (15, 5) and [(job.race_no, offset) for job, offset in due_stages(jobs, offsets, now_t15)] == [(1, 15)]
+        assert [(job.race_no, offset) for job, offset in due_stages(jobs, offsets, now_t5)] == [(1, 5)]
+        assert not due_stages(jobs, offsets, now_not_due)
         state_path = root / "runtime" / "state.json"
-        result = process(config_path, root, root / "outputs", state_path, now_due, True, 60)
-        assert result["dry_run"] and result["processed"][0]["status"] == "dry_run_due"
+        result = process(config_path, root, root / "outputs", state_path, now_t15, True, 60)
+        assert result["dry_run"] and result["processed"][0]["status"] == "dry_run_due" and result["processed"][0]["stage"] == "T_MINUS_15"
         assert not state_path.exists(), "dry run must not write run state"
 
         action_config = root / "action_schedule.json"

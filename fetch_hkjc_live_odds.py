@@ -170,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-interval", type=int, default=DEFAULT_MIN_INTERVAL_SECONDS, help="兩次公開頁請求最短間隔秒數")
     parser.add_argument("--state-file", default=".hkjc_live_odds_state.json", help="限速狀態檔路徑")
     parser.add_argument("--html", help="離線測試 HTML；指定時不發送網絡請求")
+    parser.add_argument("--snapshot-output", help="V10.2 可選：保存帶時間與場次標籤的雙市場賠率快照 JSON")
+    parser.add_argument("--snapshot-label", default="", help="V10.2 快照標籤，例如 T_MINUS_15 或 T_MINUS_5")
+    parser.add_argument("--race-date", help="V10.2 快照賽日 YYYY/MM/DD；只供審計")
+    parser.add_argument("--racecourse", choices=["ST", "HV", "st", "hv"], help="V10.2 快照馬場；只供審計")
+    parser.add_argument("--race-no", type=int, help="V10.2 快照場次；只供審計")
     return parser
 
 
@@ -227,6 +232,23 @@ def main() -> int:
         "warning": "此程式採降級輸出：賠率空值、SCR 或頁面逾時會寫入 null，而非中斷後續預測。請查看 metadata.status 與 warnings。",
     }
     atomic_json_write(Path(args.metadata_output), metadata)
+    if args.snapshot_output:
+        snapshot = {
+            "schema_version": "v10.2_odds_snapshot",
+            "snapshot_label": str(args.snapshot_label or ""),
+            "captured_at_utc": requested_at,
+            "race": {
+                "race_date": args.race_date,
+                "racecourse": args.racecourse.upper() if args.racecourse else None,
+                "race_no": args.race_no,
+            },
+            "status": metadata["status"],
+            "odds": selected,
+            "metadata_file": str(Path(args.metadata_output)),
+        }
+        atomic_json_write(Path(args.snapshot_output), snapshot)
+        metadata["snapshot_output"] = str(Path(args.snapshot_output))
+        atomic_json_write(Path(args.metadata_output), metadata)
     print(json.dumps(metadata, ensure_ascii=False, indent=2))
     return 0
 

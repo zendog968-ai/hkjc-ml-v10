@@ -1,4 +1,4 @@
-name: V10.1 Race Day 60-Minute Scan
+name: V10.2 Race Day 60-Minute Scan
 
 on:
   schedule:
@@ -110,6 +110,12 @@ jobs:
             --racecourse "${{ needs.gate.outputs.racecourse }}" \
             --race-no "${{ needs.gate.outputs.race_no }}" \
             --output "${{ steps.output.outputs.dir }}/race_card.json"
+      - name: Enrich official new-horse priors when available
+        run: |
+          python enrich_hkjc_new_horse_priors.py \
+            --db hkjc_last_season.sqlite \
+            --race-card "${{ steps.output.outputs.dir }}/race_card.json" \
+            --report "${{ steps.output.outputs.dir }}/new_horse_priors_report.json"
       - name: Fetch public Win and Place odds
         run: |
           python fetch_hkjc_live_odds.py \
@@ -137,6 +143,6 @@ jobs:
       - name: Upload scan artefacts
         uses: actions/upload-artifact@v4
         with:
-          name: v10-pre-race-${{ needs.gate.outputs.race_date }}-${{ needs.gate.outputs.racecourse }}-r${{ needs.gate.outputs.race_no }}
+          name: v10-2-pre-race-${{ needs.gate.outputs.race_date }}-${{ needs.gate.outputs.racecourse }}-r${{ needs.gate.outputs.race_no }}
           path: ${{ steps.output.outputs.dir }}
           if-no-files-found: error

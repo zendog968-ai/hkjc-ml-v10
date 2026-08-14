@@ -7,3 +7,4 @@ lightgbm>=4.5
 joblib>=1.4
 playwright>=1.62
 PyYAML>=6.0
+catboost>=1.2

@@ -1,7 +1,7 @@
 {
-  "schema_version": "v10_1_pre_race_schedule_v1",
+  "schema_version": "v10_2_pre_race_schedule_v1",
   "timezone": "Asia/Hong_Kong",
-  "trigger_minutes_before": 15,
+  "snapshot_minutes_before": [15, 5],
   "meeting": {
     "race_date": "2026/09/06",
     "racecourse": "ST",

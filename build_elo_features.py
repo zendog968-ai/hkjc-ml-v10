@@ -19,6 +19,10 @@ from statistics import mean
 from typing import Iterable, Optional
 
 from equipment_features import equipment_feature_flags
+from v102_feature_utils import (
+    body_weight_features, cold_start_prior_score, distance_match_prior,
+    is_new_horse_from_prior_starts, trial_prior,
+)
 
 WITHDRAWN = {"WV", "WV-A", "WX-A", "WXNR"}
 INITIAL_ELO = 1500.0
@@ -32,7 +36,11 @@ TRACK_BIAS_MAX_DEVIATION = 0.25
 FEATURE_COLUMNS = (
     "race_date", "racecourse", "race_no", "horse_name", "horse_code", "jockey", "trainer",
     "race_class", "distance_m", "surface", "course_config", "going", "field_size", "draw",
-    "draw_pct", "weight_lbs", "weight_delta", "horse_elo_pre", "horse_condition_elo_pre",
+    "draw_pct", "weight_lbs", "weight_delta", "horse_body_weight_pre", "horse_body_weight_known_pre",
+    "body_weight_delta_pre", "body_weight_delta_known_pre", "is_extreme_body_weight_change_pre",
+    "is_new_horse", "pedigree_distance_match_pre", "pedigree_prior_known_pre", "trial_prior_known_pre",
+    "latest_trial_position_pre", "latest_trial_margin_pre", "latest_trial_qualified_pre", "cold_start_prior_pre",
+    "horse_elo_pre", "horse_condition_elo_pre",
     "jockey_elo_pre", "trainer_win_rate_pre", "horse_win_rate_pre", "horse_top3_rate_pre",
     "condition_win_rate_pre", "recent_finish_fraction_pre", "recent_margin_pre", "recent_win_rate_pre",
     "closing400_proxy_pre", "closing400_trend_pre", "elo_vs_field", "jockey_elo_vs_field",
@@ -59,6 +67,7 @@ class HistoricalRun:
     win: int
     top3: int
     equipment_raw: str | None
+    body_weight_lbs: float | None
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -208,6 +217,23 @@ def create_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_starter_equipment_horse ON starter_equipment(horse_code, race_date);
 
+        CREATE TABLE IF NOT EXISTS horse_new_horse_priors (
+            horse_code TEXT NOT NULL,
+            horse_name TEXT,
+            as_of_date TEXT NOT NULL,
+            sire_name TEXT,
+            suggested_distance_text TEXT,
+            pedigree_source_url TEXT NOT NULL DEFAULT '',
+            latest_trial_date TEXT,
+            latest_trial_position REAL,
+            latest_trial_margin_lengths REAL,
+            latest_trial_qualified TEXT,
+            trial_source_url TEXT NOT NULL DEFAULT '',
+            fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (horse_code, as_of_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_new_horse_prior_lookup ON horse_new_horse_priors(horse_code, as_of_date);
+
         CREATE TABLE IF NOT EXISTS elo_feature_store (
             race_date TEXT NOT NULL,
             racecourse TEXT NOT NULL,
@@ -226,6 +252,19 @@ def create_schema(conn: sqlite3.Connection) -> None:
             draw_pct REAL,
             weight_lbs REAL,
             weight_delta REAL,
+            horse_body_weight_pre REAL NOT NULL DEFAULT 0.0,
+            horse_body_weight_known_pre INTEGER NOT NULL DEFAULT 0,
+            body_weight_delta_pre REAL NOT NULL DEFAULT 0.0,
+            body_weight_delta_known_pre INTEGER NOT NULL DEFAULT 0,
+            is_extreme_body_weight_change_pre INTEGER NOT NULL DEFAULT 0,
+            is_new_horse INTEGER NOT NULL DEFAULT 0,
+            pedigree_distance_match_pre REAL NOT NULL DEFAULT 0.5,
+            pedigree_prior_known_pre INTEGER NOT NULL DEFAULT 0,
+            trial_prior_known_pre INTEGER NOT NULL DEFAULT 0,
+            latest_trial_position_pre REAL NOT NULL DEFAULT 0.0,
+            latest_trial_margin_pre REAL NOT NULL DEFAULT 0.0,
+            latest_trial_qualified_pre INTEGER NOT NULL DEFAULT 0,
+            cold_start_prior_pre REAL NOT NULL DEFAULT 0.5,
             horse_elo_pre REAL NOT NULL,
             horse_condition_elo_pre REAL NOT NULL,
             jockey_elo_pre REAL NOT NULL,
@@ -283,6 +322,19 @@ def create_schema(conn: sqlite3.Connection) -> None:
         "class_level": "INTEGER NOT NULL DEFAULT 6",
         "class_drop_from_last_pre": "REAL NOT NULL DEFAULT 0.0",
         "class_weight_interaction_pre": "REAL NOT NULL DEFAULT 0.0",
+        "horse_body_weight_pre": "REAL NOT NULL DEFAULT 0.0",
+        "horse_body_weight_known_pre": "INTEGER NOT NULL DEFAULT 0",
+        "body_weight_delta_pre": "REAL NOT NULL DEFAULT 0.0",
+        "body_weight_delta_known_pre": "INTEGER NOT NULL DEFAULT 0",
+        "is_extreme_body_weight_change_pre": "INTEGER NOT NULL DEFAULT 0",
+        "is_new_horse": "INTEGER NOT NULL DEFAULT 0",
+        "pedigree_distance_match_pre": "REAL NOT NULL DEFAULT 0.5",
+        "pedigree_prior_known_pre": "INTEGER NOT NULL DEFAULT 0",
+        "trial_prior_known_pre": "INTEGER NOT NULL DEFAULT 0",
+        "latest_trial_position_pre": "REAL NOT NULL DEFAULT 0.0",
+        "latest_trial_margin_pre": "REAL NOT NULL DEFAULT 0.0",
+        "latest_trial_qualified_pre": "INTEGER NOT NULL DEFAULT 0",
+        "cold_start_prior_pre": "REAL NOT NULL DEFAULT 0.5",
         "equipment_raw": "TEXT",
         "previous_equipment_raw_pre": "TEXT",
         "is_first_time_blinker": "INTEGER NOT NULL DEFAULT 0",
@@ -314,7 +366,8 @@ def fetch_races(conn: sqlite3.Connection) -> Iterable[sqlite3.Row]:
 def fetch_runners(conn: sqlite3.Connection, race: sqlite3.Row) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT s.horse_name, s.horse_code, s.jockey, s.trainer, s.weight_lbs, s.draw,
+        SELECT s.horse_name, s.horse_code, s.jockey, s.trainer, s.weight_lbs,
+               s.declared_weight_kg AS horse_body_weight_lbs, s.draw,
                s.margin_lengths, s.running_positions, s.finish_pos, s.finish_pos_text,
                COALESCE(e.equipment_raw, s.equipment) AS equipment
         FROM starters AS s
@@ -327,6 +380,26 @@ def fetch_runners(conn: sqlite3.Connection, race: sqlite3.Row) -> list[sqlite3.R
         """,
         (race["race_date"], race["racecourse"], race["race_no"]),
     ).fetchall()
+
+
+def load_new_horse_prior(conn: sqlite3.Connection, horse_code: Optional[str], as_of_date: str) -> sqlite3.Row | None:
+    """Return the latest prior recorded no later than the target race date.
+
+    The <= rule prevents a later biography or trial record leaking into an earlier start.
+    """
+    if not horse_code:
+        return None
+    return conn.execute(
+        """
+        SELECT sire_name, suggested_distance_text, latest_trial_date, latest_trial_position,
+               latest_trial_margin_lengths, latest_trial_qualified
+        FROM horse_new_horse_priors
+        WHERE horse_code=? AND as_of_date<=?
+        ORDER BY as_of_date DESC
+        LIMIT 1
+        """,
+        (horse_code, as_of_date),
+    ).fetchone()
 
 
 def build(db_path: str, report_path: str) -> dict[str, object]:
@@ -391,6 +464,23 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
             actual_close = race_closing_proxy(finish_pos, field_size, margin, row["running_positions"])
             prior_weight = history[-1].weight_lbs if history else None
             previous_equipment = history[-1].equipment_raw if history else None
+            prior_body_weight = history[-1].body_weight_lbs if history else None
+            body_features = body_weight_features(row["horse_body_weight_lbs"], prior_body_weight)
+            is_new_horse = is_new_horse_from_prior_starts(starts)
+            prior = load_new_horse_prior(conn, row["horse_code"], str(race["race_date"])) if is_new_horse else None
+            pedigree_match, pedigree_known = distance_match_prior(
+                prior["suggested_distance_text"] if prior else None, race["distance_m"]
+            )
+            trial_features = trial_prior(
+                prior["latest_trial_position"] if prior else None,
+                prior["latest_trial_margin_lengths"] if prior else None,
+                prior["latest_trial_qualified"] if prior else None,
+            )
+            cold_start = cold_start_prior_score(
+                pedigree_match, pedigree_known,
+                trial_features["latest_trial_position_pre"], trial_features["latest_trial_margin_pre"],
+                trial_features["latest_trial_qualified_pre"], trial_features["trial_prior_known_pre"],
+            )
             equipment_flags = equipment_feature_flags(row["equipment"], previous_equipment, bool(history and previous_equipment is not None))
             prior_class_level = history[-1].class_level if history else current_class_level
             class_drop = current_class_level - prior_class_level
@@ -426,6 +516,12 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
                 "class_level": current_class_level,
                 "class_drop_from_last_pre": class_drop,
                 "class_weight_interaction_pre": class_drop * weight_delta,
+                **body_features,
+                "is_new_horse": is_new_horse,
+                "pedigree_distance_match_pre": pedigree_match,
+                "pedigree_prior_known_pre": pedigree_known,
+                **trial_features,
+                "cold_start_prior_pre": cold_start,
                 "equipment_raw": row["equipment"],
                 "previous_equipment_raw_pre": previous_equipment,
                 **equipment_flags,
@@ -441,7 +537,12 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
                     jockey, trainer, race["race_class"], race["distance_m"], race["surface"],
                     race["course_config"], race["going"], field_size, row["draw"],
                     (safe_float(row["draw"]) / field_size) if row["draw"] else None, weight,
-                    weight_delta,
+                    weight_delta, features["horse_body_weight_pre"], features["horse_body_weight_known_pre"],
+                    features["body_weight_delta_pre"], features["body_weight_delta_known_pre"],
+                    features["is_extreme_body_weight_change_pre"], features["is_new_horse"],
+                    features["pedigree_distance_match_pre"], features["pedigree_prior_known_pre"],
+                    features["trial_prior_known_pre"], features["latest_trial_position_pre"],
+                    features["latest_trial_margin_pre"], features["latest_trial_qualified_pre"], features["cold_start_prior_pre"],
                     features["horse_elo_pre"], features["horse_condition_elo_pre"], features["jockey_elo_pre"],
                     features["trainer_win_rate_pre"], features["horse_win_rate_pre"], features["horse_top3_rate_pre"],
                     features["condition_win_rate_pre"], features["recent_finish_fraction_pre"],
@@ -453,7 +554,7 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
                     features["is_first_time_blinker"], features["is_equip_added"], features["equipment_changed"], features["equipment_history_known_pre"],
                     features["trainer_equip_change_roi_pre"], features["trainer_equip_change_sample_pre"],
                     int(finish_pos == 1), int(finish_pos <= 3), finish_pos, row["finish_pos_text"], actual_close,
-                    "elo_features_v10_1_equipment",
+                    "elo_features_v10_2_advanced",
                 )
             )
             race_records.append(
@@ -498,6 +599,7 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
                     win=int(finish_pos == 1),
                     top3=int(finish_pos <= 3),
                     equipment_raw=record["equipment_raw"],
+                    body_weight_lbs=safe_float(row["horse_body_weight_lbs"], 0.0) or None,
                 )
             )
             horse_stats[horse][0] += 1
@@ -546,7 +648,7 @@ def build(db_path: str, report_path: str) -> dict[str, object]:
         "races_skipped": skipped_races,
         "horse_count": len(horse_elo),
         "jockey_count": len(jockey_elo),
-        "source_version": "elo_features_v10_1_equipment",
+        "source_version": "elo_features_v10_2_advanced",
         "track_bias_prior_runners": TRACK_BIAS_PRIOR_RUNNERS,
         "track_bias_max_deviation": TRACK_BIAS_MAX_DEVIATION,
         "note": "closing400_proxy is derived from official running positions and margins; it is not a measured individual 400m sectional time. track_bias_pre uses expected-win smoothing, sample-reliability shrinkage toward 1.0, and a bounded deviation. Equipment flags use official gear records only from prior starts; trainer_equip_change_roi_pre is a bounded two-year smoothed win-rate weight, not literal betting ROI.",

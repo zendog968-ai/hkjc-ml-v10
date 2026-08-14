@@ -57,6 +57,9 @@ def candidate_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "place_odds": finite_number(row.get("place_market_odds")),
         "win_ev_per_unit": finite_number(row.get("ev_per_unit")),
         "place_ev_per_unit": finite_number(row.get("place_ev_per_unit")),
+        "odds_drop_ratio": finite_number(row.get("odds_drop_ratio")),
+        "gate_money_drop_flag": bool(row.get("gate_money_drop_flag")),
+        "market_movement_label": row.get("market_movement_label"),
         "data_warning": row.get("data_warning"),
     }
 
@@ -114,6 +117,7 @@ def build_message(label: str, strategies: dict[str, list[dict[str, Any]]]) -> st
                 f"【{category}・{item['focus_level']}】{item['horse_name']}"
                 f"｜獨贏{percentage(item['predicted_win_probability'])}"
                 f"｜位置{percentage(item['predicted_place_probability'])}｜{odds_part}"
+                + ("｜🔥閘前資金落飛" if item.get("gate_money_drop_flag") else "")
             )
     return "\n".join(lines)
 
@@ -129,15 +133,16 @@ def markdown_table(selections: list[dict[str, Any]]) -> list[str]:
     if not selections:
         return ["目前沒有符合此策略門檻的馬匹。"]
     lines = [
-        "| 馬匹 | 焦點 | 檔位 | 騎師 | 獨贏機率 | 位置機率 | 獨贏賠率 | 位置賠率 | 獨贏 EV | 位置 EV |",
-        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|",
+        "| 馬匹 | 焦點 | 檔位 | 騎師 | 獨贏機率 | 位置機率 | 獨贏賠率 | 位置賠率 | 獨贏 EV | 位置 EV | 資金動向 |",
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for item in selections:
         lines.append(
             f"| {item['horse_name']} | {item['focus_level']} | {item.get('draw', '—')} | {item.get('jockey', '—')} "
             f"| {percentage(item['predicted_win_probability'])} | {percentage(item['predicted_place_probability'])} "
             f"| {odds_text(item['win_odds'])} | {odds_text(item['place_odds'])} "
-            f"| {signed_ev(item['win_ev_per_unit'])} | {signed_ev(item['place_ev_per_unit'])} |"
+            f"| {signed_ev(item['win_ev_per_unit'])} | {signed_ev(item['place_ev_per_unit'])} | "
+            f"{'🔥 閘前資金落飛' if item.get('gate_money_drop_flag') else '—'} |"
         )
     return lines
 
@@ -145,7 +150,7 @@ def markdown_table(selections: list[dict[str, Any]]) -> list[str]:
 def build_markdown(output: dict[str, Any]) -> str:
     strategies = output["strategies"]
     lines = [
-        f"# V10.1 賽前掃描報告｜{output['race_label']}",
+        f"# V10.2 賽前掃描報告｜{output['race_label']}",
         "",
         f"> 產生時間（UTC）：{output['generated_at_utc']}。此報告僅供模型研究；不構成投注保證或自動投注指令。",
         "",
@@ -173,7 +178,7 @@ def build_markdown(output: dict[str, Any]) -> str:
         "",
         "## 資料注意事項",
         "",
-        "如賠率檔狀態為 `degraded`、有撤回馬，或出現樣本不足警示，應以香港賽馬會最後公布資料覆核。市場賠率只作比較，位置機率是由獨贏強度推導的模擬代理。",
+        "如賠率檔狀態為 `degraded`、有撤回馬，或出現樣本不足警示，應以香港賽馬會最後公布資料覆核。🔥 閘前資金落飛僅表示公開獨贏賠率由賽前15分鐘至5分鐘下跌達20%或以上，並非大戶身份、內幕消息或賽果保證。市場賠率只作比較，位置機率是由集成獨贏強度推導的模擬代理。",
     ])
     return "\n".join(lines) + "\n"
 
@@ -185,7 +190,7 @@ def run(prediction_path: str, output_path: str, phone: str = DEFAULT_PHONE, mark
     label = race_label(prediction)
     message = build_message(label, strategies) if selections else None
     output = {
-        "schema_version": "v10_1_pre_race_filter_v2",
+        "schema_version": "v10_2_pre_race_filter_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "race_label": label,
         "selection_count": len(selections),
@@ -211,7 +216,7 @@ def run(prediction_path: str, output_path: str, phone: str = DEFAULT_PHONE, mark
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="以 V10.1 預測結果篩選熱門穩攻與冷門突襲，產生 JSON、Markdown 與 WhatsApp 預覽連結")
+    parser = argparse.ArgumentParser(description="以 V10.2 集成預測結果篩選熱門穩攻與冷門突襲，產生 JSON、Markdown 與 WhatsApp 預覽連結")
     parser.add_argument("--prediction", required=True, help="predict.py 產生的 prediction.json")
     parser.add_argument("--output", default="high_probability_filter.json")
     parser.add_argument("--markdown-output", help="可選：輸出的 Markdown 報告路徑")
