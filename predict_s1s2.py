@@ -17,6 +17,8 @@ from typing import Any
 
 import numpy as np
 
+from overseas_cold_start_priors import ensure_prediction_prior_columns, hierarchical_prior
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -27,22 +29,6 @@ def atomic_json(path: Path, payload: Any) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temp.replace(path)
-
-
-def prior_strength(row: dict[str, Any]) -> tuple[float, str, str]:
-    starts = row.get("career_starts")
-    wins = row.get("career_wins")
-    places = row.get("career_places")
-    if not isinstance(starts, (int, float)) or starts <= 0 or not isinstance(wins, (int, float)) or not isinstance(places, (int, float)):
-        return 0.120, "neutral_prior", "missing_or_unusable_offshore_history"
-    starts = float(starts)
-    # Beta-smoothed public career rates.  The score is relative only and will be
-    # normalized within this field; it is not a claim of transportable HK ELO.
-    win_rate = (float(wins) + 1.0) / (starts + 10.0)
-    top3_rate = (float(places) + 3.0) / (starts + 10.0)
-    score = max(0.015, 0.62 * win_rate + 0.38 * (top3_rate / 3.0))
-    tier = "career_prior_20plus" if starts >= 20 else "career_prior_under_20"
-    return score, tier, "public_overseas_career_prior"
 
 
 def plackett_luce_probabilities(weights: np.ndarray, simulations: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -74,21 +60,22 @@ def capped_kelly(probability: float, odds: Any, cap: float) -> float | None:
 def write_db(db_path: Path, race_id: int, generated_at: str, model_version: str, rows: list[dict[str, Any]]) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
+    ensure_prediction_prior_columns(conn)
     for row in rows:
         conn.execute(
-            """INSERT INTO overseas_prerace_predictions(overseas_race_id,generated_at_utc,model_version,horse_no,predicted_win_probability,predicted_place_probability,cold_start_tier,prior_source,win_odds_at_capture,place_odds_at_capture,win_ev,place_ev,kelly_fraction,odds_snapshot_status,odds_snapshot_at_utc,odds_drop_flag,source_json_path)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (race_id, generated_at, model_version, row["horse_no"], row["predicted_win_probability"], row["predicted_place_probability"], row["cold_start_tier"], row["prior_source"], row.get("win_odds"), row.get("place_odds"), row.get("win_ev"), row.get("place_ev"), row.get("kelly_fraction"), row["odds_snapshot_status"], row.get("odds_snapshot_at_utc"), int(row.get("odds_drop_flag", False)), row.get("source_json_path")),
+            """INSERT INTO overseas_prerace_predictions(overseas_race_id,generated_at_utc,model_version,horse_no,predicted_win_probability,predicted_place_probability,cold_start_tier,prior_source,win_odds_at_capture,place_odds_at_capture,win_ev,place_ev,kelly_fraction,odds_snapshot_status,odds_snapshot_at_utc,odds_drop_flag,source_json_path,prior_confidence,prior_uncertainty,prior_detail_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (race_id, generated_at, model_version, row["horse_no"], row["predicted_win_probability"], row["predicted_place_probability"], row["cold_start_tier"], row["prior_source"], row.get("win_odds"), row.get("place_odds"), row.get("win_ev"), row.get("place_ev"), row.get("kelly_fraction"), row["odds_snapshot_status"], row.get("odds_snapshot_at_utc"), int(row.get("odds_drop_flag", False)), row.get("source_json_path"), row["prior_confidence"], row["prior_uncertainty"], json.dumps(row["prior_detail"], ensure_ascii=False)),
         )
     conn.commit()
     conn.close()
 
 
 def markdown_report(payload: dict[str, Any]) -> str:
-    lines = ["# V10.2 S1/S2 海外轉播賽預測", "", "> **🌍 海外轉播賽 (S1/S2)：冷啟動先驗模式。** 本報告不會將香港 ELO 硬套用至海外馬匹；賠率不可用時，EV 及 Kelly 保持空白。", "", "| 馬號 | 馬匹 | 勝出率 | 位置率 | 獨贏賠率 | 獨贏 EV | 位置賠率 | 位置 EV | Kelly | 先驗 |", "|---:|---|---:|---:|---:|---:|---:|---:|---:|---|"]
+    lines = ["# V10.2 S1/S2 海外轉播賽預測", "", "> **🌍 海外轉播賽 (S1/S2)：冷啟動先驗模式。** 本報告不會將香港 ELO 硬套用至海外馬匹；賠率不可用時，EV 及 Kelly 保持空白。", "", "| 馬號 | 馬匹 | 勝出率 | 位置率 | 獨贏賠率 | 獨贏 EV | 位置賠率 | 位置 EV | Kelly | 先驗／信心 |", "|---:|---|---:|---:|---:|---:|---:|---:|---:|---|"]
     for row in payload["predictions"]:
         fmt = lambda value, pct=False: "—" if value is None else (f"{value:.2%}" if pct else f"{value:.2f}")
-        lines.append(f"| {row['horse_no']} | {row['horse_name']} | {fmt(row['predicted_win_probability'], True)} | {fmt(row['predicted_place_probability'], True)} | {fmt(row.get('win_odds'))} | {fmt(row.get('win_ev'), True)} | {fmt(row.get('place_odds'))} | {fmt(row.get('place_ev'), True)} | {fmt(row.get('kelly_fraction'), True)} | {row['cold_start_tier']} |")
+        lines.append(f"| {row['horse_no']} | {row['horse_name']} | {fmt(row['predicted_win_probability'], True)} | {fmt(row['predicted_place_probability'], True)} | {fmt(row.get('win_odds'))} | {fmt(row.get('win_ev'), True)} | {fmt(row.get('place_odds'))} | {fmt(row.get('place_ev'), True)} | {fmt(row.get('kelly_fraction'), True)} | {row['cold_start_tier']}／{fmt(row.get('prior_confidence'), True)} |")
     lines += ["", "## 資料完整性", "", f"- 賽卡狀態：`{payload['input_status']}`。", f"- 賠率完整狀態：`{payload['odds_snapshot_status']}`。", "- EV 公式：`p × 香港賽馬會顯示派彩倍數 − 1`；只在該欄賠率可用時計算。", "- 此輸出是場內相對機率與研究訊號，並非收益保證。"]
     return "\n".join(lines) + "\n"
 
@@ -118,27 +105,32 @@ def main() -> int:
     runners = [row for row in card.get("runners", []) if isinstance(row.get("horse_no"), int) and row.get("horse_name")]
     if len(runners) < 2:
         raise SystemExit("race_card 可用馬匹少於兩匹。")
-    strengths, meta = [], []
-    for runner in runners:
-        score, tier, source = prior_strength(runner)
-        strengths.append(score)
-        meta.append((tier, source))
-    win, place = plackett_luce_probabilities(np.asarray(strengths, dtype=float), max(args.simulations, 1000), args.seed)
     generated_at = utc_now()
+    prior_conn = sqlite3.connect(Path(args.db))
+    prior_conn.execute("PRAGMA foreign_keys = ON")
+    strengths, meta = [], []
+    try:
+        for runner in runners:
+            prior = hierarchical_prior(prior_conn, runner, len(runners), generated_at)
+            strengths.append(prior.strength)
+            meta.append(prior)
+    finally:
+        prior_conn.close()
+    win, place = plackett_luce_probabilities(np.asarray(strengths, dtype=float), max(args.simulations, 1000), args.seed)
     odds_status = card.get("status", "degraded")
     predictions = []
-    for runner, win_p, place_p, (tier, source) in zip(runners, win, place, meta):
+    for runner, win_p, place_p, prior in zip(runners, win, place, meta):
         win_odds = runner.get("win_odds")
         place_odds = runner.get("place_odds")
         result = {
             "horse_no": runner["horse_no"], "horse_name": runner["horse_name"], "predicted_win_probability": float(win_p), "predicted_place_probability": float(place_p),
             "win_odds": win_odds, "place_odds": place_odds, "win_ev": expected_value(float(win_p), win_odds), "place_ev": expected_value(float(place_p), place_odds),
-            "kelly_fraction": capped_kelly(float(win_p), win_odds, args.kelly_cap), "cold_start_tier": tier, "prior_source": source,
+            "kelly_fraction": capped_kelly(float(win_p), win_odds, args.kelly_cap), "cold_start_tier": prior.tier, "prior_source": prior.source, "prior_confidence": prior.confidence, "prior_uncertainty": prior.uncertainty, "prior_detail": prior.detail,
             "odds_snapshot_status": odds_status, "odds_snapshot_at_utc": None, "odds_drop_flag": False, "source_json_path": str(input_path.resolve()),
         }
         predictions.append(result)
     predictions.sort(key=lambda row: row["predicted_win_probability"], reverse=True)
-    output = {"schema_version": "v10.2_s1s2_prediction_v1", "label": "🌍 海外轉播賽 (S1/S2)", "generated_at_utc": generated_at, "model_version": args.model_version, "input_status": card.get("status"), "odds_snapshot_status": odds_status, "race": race, "simulations": max(args.simulations, 1000), "predictions": predictions, "data_warning": "海外馬匹未使用香港 ELO；此為公開生涯資料的冷啟動場內相對先驗。賠率空缺不計算 EV／Kelly。"}
+    output = {"schema_version": "v10.2_s1s2_prediction_v1", "label": "🌍 海外轉播賽 (S1/S2)", "generated_at_utc": generated_at, "model_version": args.model_version, "input_status": card.get("status"), "odds_snapshot_status": odds_status, "race": race, "simulations": max(args.simulations, 1000), "predictions": predictions, "data_warning": "海外馬匹未使用香港 ELO；分層先驗只使用公開生涯與預測時點前的海外 archive。低樣本或缺資料會退火至中性場內強度。賠率空缺不計算 EV／Kelly。"}
     atomic_json(Path(args.output_json), output)
     Path(args.output_md).write_text(markdown_report(output), encoding="utf-8")
     if not args.no_write_db:

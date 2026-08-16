@@ -119,6 +119,9 @@ CREATE TABLE IF NOT EXISTS overseas_prerace_predictions (
     odds_snapshot_at_utc TEXT,
     odds_drop_flag INTEGER NOT NULL DEFAULT 0,
     source_json_path TEXT,
+    prior_confidence REAL,
+    prior_uncertainty REAL,
+    prior_detail_json TEXT,
     UNIQUE(overseas_race_id, generated_at_utc, model_version, horse_no),
     FOREIGN KEY(overseas_race_id) REFERENCES overseas_races(overseas_race_id)
 );
