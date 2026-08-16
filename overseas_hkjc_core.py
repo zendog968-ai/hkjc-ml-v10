@@ -329,10 +329,13 @@ def upsert_meeting(conn: sqlite3.Connection, meeting: OverseasMeeting, fixture_d
 def upsert_race(conn: sqlite3.Connection, meeting_id: int, meeting: OverseasMeeting, race_no: int, **fields: Any) -> int:
     key = f"{meeting.meeting_date}:{meeting.simulcast_code}:{race_no}"
     conn.execute(
-        """INSERT INTO overseas_races(meeting_id,race_no,official_race_key,race_status,racecard_url,result_url,fetched_at_utc)
-        VALUES(?,?,?,?,?,?,?) ON CONFLICT(meeting_id,race_no) DO UPDATE SET race_status=excluded.race_status,
+        """INSERT INTO overseas_races(meeting_id,race_no,official_race_key,race_name,race_class,distance_m,surface,going,scheduled_start_local,scheduled_start_utc,race_status,racecard_url,result_url,fetched_at_utc)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(meeting_id,race_no) DO UPDATE SET race_status=excluded.race_status,
+        race_name=COALESCE(excluded.race_name,overseas_races.race_name),race_class=COALESCE(excluded.race_class,overseas_races.race_class),
+        distance_m=COALESCE(excluded.distance_m,overseas_races.distance_m),surface=COALESCE(excluded.surface,overseas_races.surface),going=COALESCE(excluded.going,overseas_races.going),
+        scheduled_start_local=COALESCE(excluded.scheduled_start_local,overseas_races.scheduled_start_local),scheduled_start_utc=COALESCE(excluded.scheduled_start_utc,overseas_races.scheduled_start_utc),
         racecard_url=COALESCE(excluded.racecard_url,overseas_races.racecard_url),result_url=COALESCE(excluded.result_url,overseas_races.result_url),fetched_at_utc=excluded.fetched_at_utc""",
-        (meeting_id, race_no, key, fields.get("race_status", "discovered"), fields.get("racecard_url"), fields.get("result_url"), utc_now()),
+        (meeting_id, race_no, key, fields.get("race_name"), fields.get("race_class"), fields.get("distance_m"), fields.get("surface"), fields.get("going"), fields.get("scheduled_start_local"), fields.get("scheduled_start_utc"), fields.get("race_status", "discovered"), fields.get("racecard_url"), fields.get("result_url"), utc_now()),
     )
     row = conn.execute("SELECT overseas_race_id FROM overseas_races WHERE meeting_id=? AND race_no=?", (meeting_id, race_no)).fetchone()
     conn.commit()
@@ -353,6 +356,23 @@ def header_position(headers: list[str], candidates: Iterable[str]) -> int | None
     return None
 
 
+def parse_racecard_context(html: str) -> dict[str, Any]:
+    """Extract only clearly labelled public race context; leave ambiguity as null."""
+    text = normalize_space(BeautifulSoup(html, "html.parser").get_text(" ", strip=True))
+    surface_match = re.search(r"\b(\d{3,4})m\s+(Turf|Dirt|All\s*Weather|Synthetic)\b", text, re.I)
+    context: dict[str, Any] = {
+        "distance_m": int(surface_match.group(1)) if surface_match else None,
+        "surface": surface_match.group(2).upper().replace("  ", " ") if surface_match else None,
+        "going": None,
+    }
+    conditions = ["GOOD TO YIELDING", "GOOD TO SOFT", "GOOD TO FIRM", "YIELDING TO SOFT", "SOFT TO HEAVY", "VERY HEAVY", "GOOD", "YIELDING", "SOFT", "HEAVY", "FIRM", "FAST"]
+    for condition in conditions:
+        if re.search(rf"\b{re.escape(condition)}\b", text, re.I):
+            context["going"] = condition
+            break
+    return context
+
+
 def parse_racecard_starters(html: str) -> list[dict[str, Any]]:
     soup = BeautifulSoup(html, "html.parser")
     best: list[dict[str, Any]] = []
@@ -368,6 +388,10 @@ def parse_racecard_starters(html: str) -> list[dict[str, Any]]:
         draw_i = header_position(headers, ["draw"])
         career_i = header_position(headers, ["career"])
         gear_i = header_position(headers, ["gear"])
+        rating_i = header_position(headers, ["rpr", "ifha", "international rating", "world rating"])
+        last_run_i = header_position(headers, ["last run date", "last run"])
+        going_history_i = header_position(headers, ["going record", "going history"])
+        trainer_g1_i = header_position(headers, ["trainer g1", "trainer group 1"])
         parsed: list[dict[str, Any]] = []
         for row in table.find_all("tr")[1:]:
             cells = [normalize_space(cell.get_text(" ", strip=True)) for cell in row.find_all("td")]
@@ -379,6 +403,12 @@ def parse_racecard_starters(html: str) -> list[dict[str, Any]]:
                 continue
             career = cells[career_i] if career_i is not None and career_i < len(cells) else ""
             wins_places = re.search(r"(\d+)\s*\((\d+)-(\d+)-(\d+)\)", career)
+            rating_header = headers[rating_i] if rating_i is not None else ""
+            rating_type = "RPR" if "rpr" in rating_header else "IFHA" if "ifha" in rating_header else "WORLD_RATING" if "world" in rating_header else "INTERNATIONAL_RATING" if "international" in rating_header else None
+            rating_value = first_float(cells[rating_i]) if rating_i is not None and rating_i < len(cells) and rating_type else None
+            g1_text = cells[trainer_g1_i] if trainer_g1_i is not None and trainer_g1_i < len(cells) else ""
+            g1_match = re.search(r"(\d+)\s*[-/]\s*(\d+)", g1_text)
+            raw_fields = {headers[i]: cells[i] for i in range(min(len(headers), len(cells)))}
             parsed.append({
                 "horse_no": horse_no, "horse_name": horse, "jockey": cells[jockey_i] if jockey_i is not None and jockey_i < len(cells) else None,
                 "trainer": cells[trainer_i] if trainer_i is not None and trainer_i < len(cells) else None,
@@ -388,6 +418,11 @@ def parse_racecard_starters(html: str) -> list[dict[str, Any]]:
                 "career_wins": int(wins_places.group(2)) if wins_places else None,
                 "career_places": int(wins_places.group(3)) + int(wins_places.group(4)) if wins_places else None,
                 "gear": cells[gear_i] if gear_i is not None and gear_i < len(cells) else None,
+                "international_rating": rating_value, "rating_type": rating_type,
+                "last_run_date": cells[last_run_i] if last_run_i is not None and last_run_i < len(cells) else None,
+                "going_history_json": cells[going_history_i] if going_history_i is not None and going_history_i < len(cells) else None,
+                "trainer_g1_starts": int(g1_match.group(2)) if g1_match else None, "trainer_g1_wins": int(g1_match.group(1)) if g1_match else None,
+                "source_row_fields": raw_fields,
             })
         if len(parsed) > len(best):
             best = parsed
@@ -429,15 +464,21 @@ def parse_results(html: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]
 
 
 def apply_racecard(conn: sqlite3.Connection, overseas_race_id: int, starters: list[dict[str, Any]]) -> None:
+    from overseas_feature_enrichment import ensure_enrichment_schema
+    ensure_enrichment_schema(conn)
     for row in starters:
         conn.execute(
-            """INSERT INTO overseas_starters(overseas_race_id,horse_no,horse_name,jockey,trainer,weight_lbs,draw,career_starts,career_wins,career_places,gear,source_fields_json)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(overseas_race_id,horse_no) DO UPDATE SET horse_name=excluded.horse_name,
+            """INSERT INTO overseas_starters(overseas_race_id,horse_no,horse_name,jockey,trainer,weight_lbs,draw,career_starts,career_wins,career_places,gear,international_rating,rating_type,rating_source_url,rating_as_of_utc,last_run_date,going_history_json,trainer_g1_starts,trainer_g1_wins,source_fields_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(overseas_race_id,horse_no) DO UPDATE SET horse_name=excluded.horse_name,
             jockey=COALESCE(excluded.jockey,overseas_starters.jockey),trainer=COALESCE(excluded.trainer,overseas_starters.trainer),
             weight_lbs=COALESCE(excluded.weight_lbs,overseas_starters.weight_lbs),draw=COALESCE(excluded.draw,overseas_starters.draw),
             career_starts=COALESCE(excluded.career_starts,overseas_starters.career_starts),career_wins=COALESCE(excluded.career_wins,overseas_starters.career_wins),
-            career_places=COALESCE(excluded.career_places,overseas_starters.career_places),gear=COALESCE(excluded.gear,overseas_starters.gear),source_fields_json=excluded.source_fields_json""",
-            (overseas_race_id, row["horse_no"], row["horse_name"], row.get("jockey"), row.get("trainer"), row.get("weight_lbs"), row.get("draw"), row.get("career_starts"), row.get("career_wins"), row.get("career_places"), row.get("gear"), json.dumps(row, ensure_ascii=False)),
+            career_places=COALESCE(excluded.career_places,overseas_starters.career_places),gear=COALESCE(excluded.gear,overseas_starters.gear),
+            international_rating=COALESCE(excluded.international_rating,overseas_starters.international_rating),rating_type=COALESCE(excluded.rating_type,overseas_starters.rating_type),
+            rating_source_url=COALESCE(excluded.rating_source_url,overseas_starters.rating_source_url),rating_as_of_utc=COALESCE(excluded.rating_as_of_utc,overseas_starters.rating_as_of_utc),
+            last_run_date=COALESCE(excluded.last_run_date,overseas_starters.last_run_date),going_history_json=COALESCE(excluded.going_history_json,overseas_starters.going_history_json),
+            trainer_g1_starts=COALESCE(excluded.trainer_g1_starts,overseas_starters.trainer_g1_starts),trainer_g1_wins=COALESCE(excluded.trainer_g1_wins,overseas_starters.trainer_g1_wins),source_fields_json=excluded.source_fields_json""",
+            (overseas_race_id, row["horse_no"], row["horse_name"], row.get("jockey"), row.get("trainer"), row.get("weight_lbs"), row.get("draw"), row.get("career_starts"), row.get("career_wins"), row.get("career_places"), row.get("gear"), row.get("international_rating"), row.get("rating_type"), row.get("rating_source_url"), row.get("rating_as_of_utc"), row.get("last_run_date"), row.get("going_history_json"), row.get("trainer_g1_starts"), row.get("trainer_g1_wins"), json.dumps(row, ensure_ascii=False)),
         )
     conn.commit()
 

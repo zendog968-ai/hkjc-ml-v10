@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +21,12 @@ from overseas_hkjc_core import (
     apply_racecard,
     compact_date,
     init_overseas_db,
+    parse_racecard_context,
     parse_racecard_starters,
     upsert_meeting,
     upsert_race,
 )
+from overseas_feature_enrichment import write_snapshot
 
 DEFAULT_ODDS_URL = "https://bet.hkjc.com/en/racing/wp/{date}/{code}/{race_no}"
 ROOT = Path(__file__).resolve().parent
@@ -65,7 +68,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--racecard-html", help="離線官方排位 HTML 測試檔。")
     parser.add_argument("--odds-html", help="離線官方賠率 HTML 測試檔。")
     parser.add_argument("--timeout", type=int, default=35)
+    parser.add_argument("--snapshot-label", choices=["T_MINUS_15", "T_MINUS_5", "OTHER"], default="OTHER", help="只在實際賽前捕捉時標示 T_MINUS_15／T_MINUS_5。")
+    parser.add_argument("--scheduled-start-utc", help="ISO UTC 開跑時間；T-15/T-5 必填，用於驗證捕捉偏差不超過 180 秒。")
     return parser
+
+
+def snapshot_timing_ok(label: str, captured_at: datetime, scheduled_start_utc: str | None) -> tuple[bool, str | None]:
+    if label == "OTHER":
+        return True, None
+    if not scheduled_start_utc:
+        return False, "T-15/T-5 快照必須提供 --scheduled-start-utc；未驗證時間不會用於落飛計算。"
+    try:
+        start = datetime.fromisoformat(scheduled_start_utc.replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            return False, "--scheduled-start-utc 必須含 UTC 時區。"
+    except ValueError:
+        return False, "--scheduled-start-utc 必須為 ISO UTC 時間。"
+    expected = 900 if label == "T_MINUS_15" else 300
+    delta = (start.astimezone(timezone.utc) - captured_at).total_seconds()
+    if abs(delta - expected) > 180:
+        return False, f"捕捉距離開跑 {delta:.0f} 秒，與 {label} 目標偏差超過 180 秒。"
+    return True, None
 
 
 def main() -> int:
@@ -88,7 +111,14 @@ def main() -> int:
     else:
         client = OfficialOverseasClient(db, Path(args.raw_dir))
         card_html, _ = client.get(card_url, "racecard")
+    race_context = parse_racecard_context(card_html)
+    race_id = upsert_race(db, meeting_id, meeting, args.race_no, racecard_url=card_url, **race_context)
+    card_captured_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     runners = parse_racecard_starters(card_html)
+    for runner in runners:
+        if runner.get("international_rating") is not None and runner.get("rating_type"):
+            runner["rating_source_url"] = card_url
+            runner["rating_as_of_utc"] = card_captured_at
     if not runners:
         raise SystemExit("官方排位頁未能解析出馬匹；已停止，請保存官方 HTML 後以 --racecard-html 檢查解析器。")
     apply_racecard(db, race_id, runners)
@@ -105,19 +135,29 @@ def main() -> int:
         selected.append({**runner, "win_odds": values.get("win"), "place_odds": values.get("place")})
     complete_pairs = sum(item["win_odds"] is not None and item["place_odds"] is not None for item in selected)
     status = "complete" if not warnings and complete_pairs == len(selected) else "degraded"
+    captured_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    timing_ok, timing_warning = snapshot_timing_ok(args.snapshot_label, datetime.fromisoformat(captured_at), args.scheduled_start_utc)
+    if timing_warning:
+        warnings.append(timing_warning)
+    snapshot_status = "complete" if status == "complete" and timing_ok else "degraded"
+    snapshot_id = write_snapshot(db, race_id, args.snapshot_label, captured_at, snapshot_status, odds_url, {int(item["horse_no"]): {"win": item["win_odds"], "place": item["place_odds"]} for item in selected})
     output = {
         "schema_version": "v10.2_s1s2_racecard_v1",
         "label": "🌍 海外轉播賽 (S1/S2)",
-        "race": {"meeting_date": args.date, "simulcast_code": code, "race_no": args.race_no, "overseas_race_id": race_id},
+        "race": {"meeting_date": args.date, "simulcast_code": code, "race_no": args.race_no, "overseas_race_id": race_id, **race_context},
         "source": {"racecard_url": card_url, "odds_url": odds_url, "racecard_mode": "offline_html" if args.racecard_html else "public_hkjc", "odds_mode": "offline_html" if args.odds_html else "public_rendered_page"},
         "status": status,
+        "odds_snapshot_at_utc": captured_at,
+        "odds_snapshot_id": snapshot_id,
+        "odds_snapshot_label": args.snapshot_label,
+        "odds_snapshot_status": snapshot_status,
         "runners": selected,
         "complete_win_place_pairs": complete_pairs,
         "warnings": warnings,
-        "odds_safety": "無可驗證公開賠率時，win_odds/place_odds 必須為 null；預測器會保留勝率但不產生 EV/Kelly。",
+        "odds_safety": "無可驗證公開賠率時，win_odds/place_odds 必須為 null；預測器會保留勝率但不產生 EV/Kelly。T-15/T-5 落飛只接受同場完整、身份匹配且時間偏差合格的雙快照。",
     }
     atomic_json(Path(args.output), output)
-    print(json.dumps({"output": str(Path(args.output)), "status": status, "runners": len(selected), "warnings": warnings}, ensure_ascii=False, indent=2))
+    print(json.dumps({"output": str(Path(args.output)), "status": status, "snapshot_status": snapshot_status, "snapshot_id": snapshot_id, "runners": len(selected), "warnings": warnings}, ensure_ascii=False, indent=2))
     return 0
 
 

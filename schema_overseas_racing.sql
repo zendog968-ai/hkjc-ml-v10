@@ -77,6 +77,15 @@ CREATE TABLE IF NOT EXISTS overseas_starters (
     career_places INTEGER,
     recent_runs_text TEXT,
     gear TEXT,
+    international_rating REAL,
+    rating_type TEXT,
+    rating_source_url TEXT,
+    rating_as_of_utc TEXT,
+    last_run_date TEXT,
+    going_history_json TEXT,
+    trainer_g1_starts INTEGER,
+    trainer_g1_wins INTEGER,
+    trainer_g1_as_of_utc TEXT,
     finish_pos_text TEXT,
     finish_pos INTEGER,
     margin_text TEXT,
@@ -98,6 +107,28 @@ CREATE TABLE IF NOT EXISTS overseas_dividends (
     source_url TEXT NOT NULL,
     PRIMARY KEY(overseas_race_id, pool_name, winning_combination),
     FOREIGN KEY(overseas_race_id) REFERENCES overseas_races(overseas_race_id)
+);
+
+CREATE TABLE IF NOT EXISTS overseas_odds_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    overseas_race_id INTEGER NOT NULL,
+    snapshot_label TEXT NOT NULL CHECK(snapshot_label IN ('T_MINUS_15','T_MINUS_5','OTHER')),
+    captured_at_utc TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('complete','degraded','unavailable')),
+    source_url TEXT NOT NULL,
+    source_document_id INTEGER,
+    UNIQUE(overseas_race_id, snapshot_label, captured_at_utc),
+    FOREIGN KEY(overseas_race_id) REFERENCES overseas_races(overseas_race_id),
+    FOREIGN KEY(source_document_id) REFERENCES overseas_source_documents(document_id)
+);
+
+CREATE TABLE IF NOT EXISTS overseas_odds_snapshot_runners (
+    snapshot_id INTEGER NOT NULL,
+    horse_no INTEGER NOT NULL,
+    win_odds REAL,
+    place_odds REAL,
+    PRIMARY KEY(snapshot_id, horse_no),
+    FOREIGN KEY(snapshot_id) REFERENCES overseas_odds_snapshots(snapshot_id)
 );
 
 CREATE TABLE IF NOT EXISTS overseas_prerace_predictions (
@@ -122,6 +153,14 @@ CREATE TABLE IF NOT EXISTS overseas_prerace_predictions (
     prior_confidence REAL,
     prior_uncertainty REAL,
     prior_detail_json TEXT,
+    international_rating REAL,
+    rating_type TEXT,
+    days_since_last_run INTEGER,
+    going_suitability REAL,
+    trainer_g1_win_rate REAL,
+    odds_drop_ratio REAL,
+    odds_drop_weight REAL,
+    feature_detail_json TEXT,
     UNIQUE(overseas_race_id, generated_at_utc, model_version, horse_no),
     FOREIGN KEY(overseas_race_id) REFERENCES overseas_races(overseas_race_id)
 );
@@ -151,3 +190,4 @@ CREATE INDEX IF NOT EXISTS idx_overseas_meetings_date ON overseas_meetings(meeti
 CREATE INDEX IF NOT EXISTS idx_overseas_races_status ON overseas_races(race_status, scheduled_start_utc);
 CREATE INDEX IF NOT EXISTS idx_overseas_starters_name ON overseas_starters(horse_name);
 CREATE INDEX IF NOT EXISTS idx_overseas_predictions_race ON overseas_prerace_predictions(overseas_race_id, generated_at_utc);
+CREATE INDEX IF NOT EXISTS idx_overseas_odds_snapshot_race ON overseas_odds_snapshots(overseas_race_id, snapshot_label, captured_at_utc);
