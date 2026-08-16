@@ -160,6 +160,13 @@ CREATE TABLE IF NOT EXISTS overseas_prerace_predictions (
     trainer_g1_win_rate REAL,
     odds_drop_ratio REAL,
     odds_drop_weight REAL,
+    weight_lbs REAL,
+    field_weight_mean REAL,
+    weight_advantage_lbs REAL,
+    recent_top4_rate REAL,
+    recent_top4_starts INTEGER,
+    weight_log_signal REAL,
+    recent_top4_log_signal REAL,
     feature_detail_json TEXT,
     UNIQUE(overseas_race_id, generated_at_utc, model_version, horse_no),
     FOREIGN KEY(overseas_race_id) REFERENCES overseas_races(overseas_race_id)

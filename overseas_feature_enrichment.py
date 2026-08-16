@@ -29,7 +29,9 @@ def ensure_enrichment_schema(conn: sqlite3.Connection) -> None:
     })
     _add_columns(conn, "overseas_prerace_predictions", {
         "international_rating": "REAL", "rating_type": "TEXT", "days_since_last_run": "INTEGER", "going_suitability": "REAL",
-        "trainer_g1_win_rate": "REAL", "odds_drop_ratio": "REAL", "odds_drop_weight": "REAL", "feature_detail_json": "TEXT",
+        "trainer_g1_win_rate": "REAL", "odds_drop_ratio": "REAL", "odds_drop_weight": "REAL", "weight_lbs": "REAL",
+        "field_weight_mean": "REAL", "weight_advantage_lbs": "REAL", "recent_top4_rate": "REAL",
+        "recent_top4_starts": "INTEGER", "weight_log_signal": "REAL", "recent_top4_log_signal": "REAL", "feature_detail_json": "TEXT",
     })
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS overseas_odds_snapshots (
@@ -102,6 +104,60 @@ def going_suitability(conn: sqlite3.Connection, runner: dict[str, Any], race_goi
     return suitability, log_signal, {"starts": starts, "wins": wins, "posterior_rate": posterior, "evidence": evidence, "as_of_utc": as_of_utc}
 
 
+def weight_log_signal(runner: dict[str, Any], field_weight_mean: float | None) -> tuple[float, float | None, dict[str, Any]]:
+    """Return a small, field-relative weight signal from an official race-card weight.
+
+    This is deliberately capped because a single overseas result must not turn
+    low weight into a dominant determinant. It is neutral when the field mean
+    or runner weight is unavailable.
+    """
+    weight = runner.get("weight_lbs")
+    if not isinstance(weight, (int, float)) or not math.isfinite(float(weight)) or field_weight_mean is None:
+        return 0.0, None, {"status": "no_verified_field_relative_weight"}
+    advantage = float(field_weight_mean) - float(weight)
+    signal = max(-0.06, min(0.06, advantage / 10.0 * 0.04))
+    return signal, advantage, {"weight_lbs": float(weight), "field_weight_mean": float(field_weight_mean), "advantage_lbs": advantage, "formula": "clip((field_mean-weight)/10*0.04, -0.06, 0.06)"}
+
+
+def _recent_top4_stats(conn: sqlite3.Connection, horse_name: str, as_of_utc: str, max_starts: int = 5) -> tuple[float, float] | None:
+    if not horse_name:
+        return None
+    rows = conn.execute("""
+        SELECT s.finish_pos
+        FROM overseas_starters AS s
+        JOIN overseas_races AS r ON r.overseas_race_id=s.overseas_race_id
+        WHERE s.horse_name=? AND r.race_status='completed'
+          AND r.scheduled_start_utc IS NOT NULL AND r.scheduled_start_utc < ?
+          AND s.finish_pos IS NOT NULL AND s.withdrawal_status IS NULL
+        ORDER BY r.scheduled_start_utc DESC
+        LIMIT ?
+    """, (horse_name, as_of_utc, max_starts)).fetchall()
+    if not rows:
+        return None
+    starts = float(len(rows))
+    top4 = float(sum(1 for row in rows if isinstance(row[0], int) and 1 <= int(row[0]) <= 4))
+    return starts, top4
+
+
+def recent_top4_log_signal(conn: sqlite3.Connection, runner: dict[str, Any], field_size: int, as_of_utc: str) -> tuple[float | None, int, float, dict[str, Any]]:
+    """Use only the latest five completed overseas starts before model time.
+
+    A Beta-style prior centred on 4/field_size prevents one recent placing from
+    becoming an overconfident signal. Until archive coverage exists it remains
+    exactly neutral.
+    """
+    stats = _recent_top4_stats(conn, str(runner.get("horse_name") or ""), as_of_utc)
+    if stats is None:
+        return None, 0, 0.0, {"status": "no_pre_cutoff_recent_top4_history"}
+    starts, top4 = stats
+    base = min(4.0 / max(field_size, 4), 1.0)
+    prior_strength = 12.0
+    posterior = (top4 + base * prior_strength) / (starts + prior_strength)
+    evidence = starts / (starts + prior_strength)
+    signal = max(-0.10, min(0.10, math.log(max(posterior, 1e-5) / base) * evidence * 0.16))
+    return posterior, int(starts), signal, {"starts": int(starts), "top4": int(top4), "base_top4_rate": base, "posterior_top4_rate": posterior, "evidence": evidence, "max_history_starts": 5, "as_of_utc": as_of_utc}
+
+
 def rating_log_signal(runner: dict[str, Any], field_rating_mean: float | None, model_as_of_utc: str) -> tuple[float, dict[str, Any]]:
     rating = runner.get("international_rating")
     rating_type = str(runner.get("rating_type") or "").upper()
@@ -154,10 +210,12 @@ def odds_drop_ratios(conn: sqlite3.Connection, overseas_race_id: int, as_of_utc:
     return ratios
 
 
-def feature_enrichment(conn: sqlite3.Connection, race: dict[str, Any], runner: dict[str, Any], field_size: int, as_of_utc: str, field_rating_mean: float | None, odds_drop: dict[str, Any] | None, odds_drop_weight: float) -> dict[str, Any]:
+def feature_enrichment(conn: sqlite3.Connection, race: dict[str, Any], runner: dict[str, Any], field_size: int, as_of_utc: str, field_rating_mean: float | None, field_weight_mean: float | None, odds_drop: dict[str, Any] | None, odds_drop_weight: float) -> dict[str, Any]:
     day_rest = days_since_last_run(runner.get("last_run_date"), race.get("meeting_date"))
     suitability, going_signal, going_detail = going_suitability(conn, runner, race.get("going"), field_size, as_of_utc)
     rating_signal, rating_detail = rating_log_signal(runner, field_rating_mean, as_of_utc)
+    weight_signal, weight_advantage, weight_detail = weight_log_signal(runner, field_weight_mean)
+    recent_top4_rate, recent_top4_starts, recent_top4_signal, recent_top4_detail = recent_top4_log_signal(conn, runner, field_size, as_of_utc)
     g1_rate, g1_signal, g1_detail = trainer_g1_log_signal(runner, as_of_utc)
     drop_ratio = odds_drop.get("ratio") if odds_drop else None
     drop_qualifies = drop_ratio is not None and drop_ratio <= -0.20
@@ -165,13 +223,15 @@ def feature_enrichment(conn: sqlite3.Connection, race: dict[str, Any], runner: d
     # overseas calibration set is available; arbitrary penalty would be worse than neutral.
     layoff_signal = 0.0
     drop_signal = float(odds_drop_weight) if drop_qualifies else 0.0
-    total_signal = max(-0.30, min(0.30, rating_signal + going_signal + g1_signal + layoff_signal + drop_signal))
+    total_signal = max(-0.30, min(0.30, rating_signal + going_signal + g1_signal + layoff_signal + weight_signal + recent_top4_signal + drop_signal))
     return {
         "log_strength_signal": total_signal,
         "international_rating": runner.get("international_rating"), "rating_type": runner.get("rating_type"),
         "days_since_last_run": day_rest, "going_suitability": suitability, "trainer_g1_win_rate": g1_rate,
+        "weight_lbs": runner.get("weight_lbs"), "field_weight_mean": field_weight_mean, "weight_advantage_lbs": weight_advantage,
+        "recent_top4_rate": recent_top4_rate, "recent_top4_starts": recent_top4_starts, "weight_log_signal": weight_signal, "recent_top4_log_signal": recent_top4_signal,
         "odds_drop_ratio": drop_ratio, "odds_drop_flag": drop_qualifies, "odds_drop_weight": float(odds_drop_weight) if drop_qualifies else 0.0,
-        "detail": {"rating": rating_detail, "going": going_detail, "trainer_g1": g1_detail, "layoff": {"days_since_last_run": day_rest, "log_signal": layoff_signal, "status": "recorded_not_directionally_weighted_until_calibrated"}, "odds_drop": odds_drop or {"status": "no_complete_t15_t5_pair"}, "total_log_strength_signal": total_signal},
+        "detail": {"rating": rating_detail, "going": going_detail, "trainer_g1": g1_detail, "weight": weight_detail, "recent_top4": recent_top4_detail, "layoff": {"days_since_last_run": day_rest, "log_signal": layoff_signal, "status": "recorded_not_directionally_weighted_until_calibrated"}, "odds_drop": odds_drop or {"status": "no_complete_t15_t5_pair"}, "total_log_strength_signal": total_signal},
     }
 
 
