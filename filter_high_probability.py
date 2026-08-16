@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+from race_risk_guidance import build_race_guidance
+
 DEFAULT_PHONE = "85296896832"
 HOT_RULE = "獨贏勝率≥10% 或 位置勝率≥85%"
 VALUE_BOMB_RULE = "獨贏賠率≥10、位置賠率≥3.5、獨贏勝率≥8%、位置勝率≥80%"
@@ -53,9 +55,10 @@ def candidate_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "trainer": row.get("trainer"),
         "predicted_win_probability": win_probability,
         "predicted_place_probability": place_probability,
-        "win_odds": finite_number(row.get("market_odds")),
-        "place_odds": finite_number(row.get("place_market_odds")),
-        "win_ev_per_unit": finite_number(row.get("ev_per_unit")),
+        "weight_lbs": finite_number(row.get("weight_lbs")),
+        "win_odds": finite_number(row.get("market_odds")) if finite_number(row.get("market_odds")) is not None else finite_number(row.get("win_odds")),
+        "place_odds": finite_number(row.get("place_market_odds")) if finite_number(row.get("place_market_odds")) is not None else finite_number(row.get("place_odds")),
+        "win_ev_per_unit": finite_number(row.get("ev_per_unit")) if finite_number(row.get("ev_per_unit")) is not None else finite_number(row.get("win_ev")),
         "place_ev_per_unit": finite_number(row.get("place_ev_per_unit")),
         "odds_drop_ratio": finite_number(row.get("odds_drop_ratio")),
         "gate_money_drop_flag": bool(row.get("gate_money_drop_flag")),
@@ -101,15 +104,18 @@ def classify_predictions(prediction: dict[str, Any]) -> dict[str, list[dict[str,
 
 def race_label(prediction: dict[str, Any]) -> str:
     race = prediction.get("race") or {}
-    date = str(race.get("race_date") or "賽日未列")
-    course = str(race.get("racecourse") or "")
+    date = str(race.get("race_date") or race.get("meeting_date") or "賽日未列")
+    course = str(race.get("racecourse") or race.get("simulcast_code") or "")
     race_no = race.get("race_no")
     suffix = f"第{race_no}場" if race_no is not None else "場次未列"
     return f"{date} {course} {suffix}".strip()
 
 
-def build_message(label: str, strategies: dict[str, list[dict[str, Any]]]) -> str:
-    lines = [f"V10.1 賽前模型篩選｜{label}", "僅供研究參考；賠率及出賽狀態以官方最後公布為準。"]
+def build_message(label: str, strategies: dict[str, list[dict[str, Any]]], guidance: dict[str, Any]) -> str:
+    lines = [f"V10.2 賽前模型篩選｜{label}", "僅供研究參考；賠率及出賽狀態以官方最後公布為準。"]
+    if guidance.get("dispersion_warning"):
+        lines.append("⚠️【高爆冷風險亂局】嚴禁以單一熱門作單膽。")
+    lines.append(f"結構提示：{guidance['bet_recommendation']}")
     for category, selections in strategies.items():
         for item in selections:
             odds_part = f"獨贏{odds_text(item['win_odds'])}／位置{odds_text(item['place_odds'])}"
@@ -119,6 +125,9 @@ def build_message(label: str, strategies: dict[str, list[dict[str, Any]]]) -> st
                 f"｜位置{percentage(item['predicted_place_probability'])}｜{odds_part}"
                 + ("｜🔥閘前資金落飛" if item.get("gate_money_drop_flag") else "")
             )
+    for item in guidance.get("value_bomb_candidates", []):
+        reasons = "、".join(item.get("reasons") or [])
+        lines.append(f"【{item['label']}】{item.get('horse_name') or '馬匹未列'}｜獨贏{odds_text(item.get('win_odds'))}｜{reasons}")
     return "\n".join(lines)
 
 
@@ -149,10 +158,17 @@ def markdown_table(selections: list[dict[str, Any]]) -> list[str]:
 
 def build_markdown(output: dict[str, Any]) -> str:
     strategies = output["strategies"]
+    guidance = output["race_guidance"]
     lines = [
         f"# V10.2 賽前掃描報告｜{output['race_label']}",
         "",
         f"> 產生時間（UTC）：{output['generated_at_utc']}。此報告僅供模型研究；不構成投注保證或自動投注指令。",
+        "",
+        "## 場內分佈與研究性結構提示",
+        "",
+        f"- 出賽馬數：`{guidance['field_size']}`；首選勝率：`{percentage(guidance['top1_win_probability'])}`。",
+        f"- 風險標籤：**{guidance['dispersion_label'] or '一般分佈風險'}**。",
+        f"- 結構提示：{guidance['bet_recommendation']}",
         "",
         "## 熱門穩攻",
         "",
@@ -165,6 +181,18 @@ def build_markdown(output: dict[str, Any]) -> str:
         f"**規則：** {output['selection_rules']['冷門突襲 / Value Bomb']}",
         "",
         *markdown_table(strategies["冷門突襲 / Value Bomb"]),
+        "",
+        "## 💣 高賠率冷門提示",
+        "",
+    ]
+    bombs = guidance.get("value_bomb_candidates", [])
+    if bombs:
+        lines += ["| 馬匹 | 標籤 | 獨贏賠率 | 模型 EV | 輔助優勢 |", "|---|---|---:|---:|---|"]
+        for item in bombs:
+            lines.append(f"| {item.get('horse_name') or '—'} | {item['label']} | {odds_text(item.get('win_odds'))} | {signed_ev(item.get('win_ev'))} | {'、'.join(item.get('reasons') or [])} |")
+    else:
+        lines.append("沒有同時符合高賠率及可驗證輕磅／內檔條件的馬匹。")
+    lines += [
         "",
         "## WhatsApp 預覽",
         "",
@@ -186,11 +214,12 @@ def build_markdown(output: dict[str, Any]) -> str:
 def run(prediction_path: str, output_path: str, phone: str = DEFAULT_PHONE, markdown_output: str | None = None) -> dict[str, Any]:
     prediction = json.loads(Path(prediction_path).read_text(encoding="utf-8"))
     strategies = classify_predictions(prediction)
+    guidance = build_race_guidance(prediction.get("predictions", []))
     selections = [item for items in strategies.values() for item in items]
     label = race_label(prediction)
-    message = build_message(label, strategies) if selections else None
+    message = build_message(label, strategies, guidance) if selections or guidance.get("value_bomb_candidates") else None
     output = {
-        "schema_version": "v10_2_pre_race_filter_v1",
+        "schema_version": "v10_2_pre_race_filter_v2",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "race_label": label,
         "selection_count": len(selections),
@@ -200,6 +229,7 @@ def run(prediction_path: str, output_path: str, phone: str = DEFAULT_PHONE, mark
             "冷門突襲 / Value Bomb": VALUE_BOMB_RULE,
         },
         "strategies": strategies,
+        "race_guidance": guidance,
         "selections": selections,
         "whatsapp": {
             "phone": "".join(char for char in phone if char.isdigit()),

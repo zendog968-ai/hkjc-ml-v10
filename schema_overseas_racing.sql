@@ -187,6 +187,7 @@ CREATE TABLE IF NOT EXISTS post_race_audits (
     settled_stake REAL,
     settled_net_return REAL,
     roi REAL,
+    brier_score REAL,
     report_path TEXT,
     status TEXT NOT NULL CHECK(status IN ('archived_only','audited','partial','error')),
     detail_json TEXT,

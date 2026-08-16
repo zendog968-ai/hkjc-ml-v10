@@ -29,6 +29,7 @@ from build_elo_features import (
     race_closing_proxy, smoothed_rate, trainer_equipment_change_weight,
 )
 from equipment_features import equipment_feature_flags
+from race_risk_guidance import build_race_guidance
 from v102_feature_utils import (
     body_weight_features, cold_start_prior_score, distance_match_prior,
     is_new_horse_from_prior_starts, trial_prior,
@@ -359,13 +360,14 @@ def predict(db_path: str, model_path: str, card_path: str, output_json: str, out
         })
     predictions.sort(key=lambda row: row["predicted_win_probability"], reverse=True)
     for rank, row in enumerate(predictions, 1): row["rank"] = rank
+    guidance = build_race_guidance(predictions)
     horses = {clean_text(str(row["horse_name"])) for row in runners}
     result = {
         "model": "HKJC V10.2 LightGBM + CatBoost ensemble + place proxy", "model_feature_version": bundle.get("feature_version"), "race": race,
         "market_overlays": {"win_overlay_path": win_odds_overlay_path, "place_overlay_path": place_odds_overlay_path, "matched_win_odds": len(horses & set(win_overlay)), "matched_place_odds": len(horses & set(place_overlay)), "invalid_win_odds_keys": invalid_win, "invalid_place_odds_keys": invalid_place},
         "market_movement": {"early_snapshot_path": early_snapshot_path, "late_snapshot_path": late_snapshot_path, "early": early_meta, "late": late_meta, "odds_drop_formula": "(T_MINUS_5 win odds - T_MINUS_15 win odds) / T_MINUS_15 win odds", "signal_threshold": ODDS_DROP_SIGNAL_THRESHOLD, "important_note": "落飛僅描述公開賠率變動，並非大戶身份或內幕資訊的證明；現階段因歷史快照不足，未加入模型訓練特徵。"},
         "place_model": {"dividend_positions": place_positions, "simulation_count": place_simulations, "seed": simulation_seed, "simulation_elapsed_seconds": simulation_seconds, "simulation_batch_size": PLACE_SIMULATION_BATCH_SIZE, "method": "Plackett-Luce ranking simulation from ensemble race-relative win strengths; not a separately trained Place model."},
-        "note": "賠率只作市場比較與雙快照標記。Win／Place EV 使用 EV=p×odds−1；模型輸出為研究性機率，並不構成勝出或回報保證。", "predictions": predictions,
+        "note": "賠率只作市場比較與雙快照標記。Win／Place EV 使用 EV=p×odds−1；模型輸出為研究性機率，並不構成勝出或回報保證。", "race_guidance": guidance, "predictions": predictions,
     }
     Path(output_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     with Path(output_csv).open("w", encoding="utf-8-sig", newline="") as handle:

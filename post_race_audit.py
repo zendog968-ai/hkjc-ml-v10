@@ -22,6 +22,14 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def ensure_audit_schema(conn: sqlite3.Connection) -> None:
+    """Apply additive audit migrations to databases created before V10.2.1."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(post_race_audits)")}
+    if "brier_score" not in columns:
+        conn.execute("ALTER TABLE post_race_audits ADD COLUMN brier_score REAL")
+    conn.commit()
+
+
 def parse_race_key(value: str) -> tuple[str, str, int]:
     parts = value.split(":")
     if len(parts) != 3:
@@ -61,13 +69,13 @@ def official_overseas(conn: sqlite3.Connection, date_value: str, code: str, race
     if not row:
         raise ValueError("海外賽事尚未在官方 archive 中。請先執行 auto_archive_results.py 或回刷器。")
     race_id = int(row[0])
-    starters = [dict(item) for item in conn.execute("SELECT horse_no,horse_name,finish_pos,finish_pos_text,margin_text,finish_time FROM overseas_starters WHERE overseas_race_id=? ORDER BY COALESCE(finish_pos,999),horse_no", (race_id,))]
+    starters = [dict(item) for item in conn.execute("SELECT horse_no,horse_name,finish_pos,finish_pos_text,margin_text,finish_time,final_win_odds,final_place_odds FROM overseas_starters WHERE overseas_race_id=? ORDER BY COALESCE(finish_pos,999),horse_no", (race_id,))]
     dividends = [dict(item) for item in conn.execute("SELECT pool_name,winning_combination,dividend_hkd FROM overseas_dividends WHERE overseas_race_id=? ORDER BY pool_name", (race_id,))]
     return race_id, starters, dividends
 
 
 def official_local(conn: sqlite3.Connection, date_value: str, course: str, race_no: int) -> tuple[str, list[dict], list[dict]]:
-    starters = [dict(item) for item in conn.execute("SELECT horse_no,horse_name,finish_pos,finish_pos_text,margin_text,finish_time FROM starters WHERE race_date=? AND racecourse=? AND race_no=? ORDER BY COALESCE(finish_pos,999),horse_no", (date_value, course, race_no))]
+    starters = [dict(item) for item in conn.execute("SELECT horse_no,horse_name,finish_pos,finish_pos_text,margin_text,finish_time,win_odds AS final_win_odds,NULL AS final_place_odds FROM starters WHERE race_date=? AND racecourse=? AND race_no=? ORDER BY COALESCE(finish_pos,999),horse_no", (date_value, course, race_no))]
     if not starters:
         raise ValueError("本地賽事尚未在官方 archive 中。")
     # Current local schema stores final Win odds on starters. Formal pool dividends are not yet normalized here.
@@ -83,31 +91,74 @@ def num(row: dict, *names: str) -> float | None:
     return None
 
 
+def settle_win_strategy(selections: list[dict], winner: dict[str, Any]) -> dict[str, Any]:
+    """Settle a one-unit-per-selection Win research basket from official final odds.
+
+    This deliberately does not settle Place selections: overseas place terms and
+    dividends are jurisdiction-specific and may not be represented by an odds
+    field alone.  The returned status remains explicit whenever settlement is
+    unavailable rather than substituting pre-race prices.
+    """
+    selected_numbers = [row.get("horse_no") for row in selections if isinstance(row.get("horse_no"), int)]
+    if not selected_numbers:
+        return {"status": "no_qualifying_selection", "selected_horse_nos": [], "stake": 0.0, "gross_return": 0.0, "net_return": 0.0, "roi": None}
+    winner_no = winner.get("horse_no")
+    winner_odds = num(winner, "final_win_odds")
+    if winner_no in selected_numbers and (winner_odds is None or winner_odds <= 1.0):
+        return {"status": "unsettled_missing_official_final_win_odds", "selected_horse_nos": selected_numbers, "stake": float(len(selected_numbers)), "gross_return": None, "net_return": None, "roi": None}
+    stake = float(len(selected_numbers))
+    gross_return = float(winner_odds) if winner_no in selected_numbers and winner_odds is not None else 0.0
+    net_return = gross_return - stake
+    return {"status": "settled_official_final_win_odds", "selected_horse_nos": selected_numbers, "stake": stake, "gross_return": gross_return, "net_return": net_return, "roi": net_return / stake}
+
+
+def field_brier_score(ordered: list[dict], winner_no: int | None) -> float | None:
+    probabilities = [num(row, "predicted_win_probability", "win_probability") for row in ordered]
+    if winner_no is None or not probabilities or any(value is None for value in probabilities):
+        return None
+    return float(sum((float(probability) - (1.0 if row.get("horse_no") == winner_no else 0.0)) ** 2 for row, probability in zip(ordered, probabilities)))
+
+
 def audit_predictions(predictions: list[dict], starters: list[dict]) -> dict[str, Any]:
     winner = next((row for row in starters if row.get("finish_pos") == 1), None)
     if not winner or not predictions:
-        return {"had_prediction": bool(predictions), "winner": winner, "top1_hit": None, "top3_contains_winner": None, "stable_strategy_hit": None, "value_strategy_hit": None, "odds_drop_count": 0, "odds_drop_winner_count": 0, "settled_stake": None, "settled_net_return": None, "roi": None}
+        return {"had_prediction": bool(predictions), "winner": winner, "top1_hit": None, "top3_contains_winner": None, "stable_strategy_hit": None, "value_strategy_hit": None, "odds_drop_count": 0, "odds_drop_winner_count": 0, "brier_score": None, "settled_stake": None, "settled_net_return": None, "roi": None, "roi_status": "not_auditable_without_both_prediction_and_official_winner", "strategy_settlement": {}}
     ordered = sorted(predictions, key=lambda row: num(row, "predicted_win_probability", "win_probability") or 0.0, reverse=True)
     winner_no = winner.get("horse_no")
     top1_hit = int(ordered[0].get("horse_no") == winner_no) if ordered else 0
     top3_contains_winner = int(any(row.get("horse_no") == winner_no for row in ordered[:3]))
     stable = [row for row in ordered if (num(row, "predicted_win_probability", "win_probability") or 0) >= 0.10 or (num(row, "predicted_place_probability", "place_probability") or 0) >= 0.85]
-    value = [row for row in ordered if (num(row, "win_odds") or 0) >= 10.0 and (num(row, "place_odds") or 0) >= 3.5 and (num(row, "predicted_win_probability", "win_probability") or 0) >= 0.08 and (num(row, "predicted_place_probability", "place_probability") or 0) >= 0.80]
-    final_win_dividend = None
-    for row in starters:
-        if row.get("horse_no") == winner_no:
-            # A prediction may retain odds captured before start but it is not suitable for settlement.
-            break
-    # Settled Win ROI can only be calculated where user supplied a separately captured final dividend field.
-    # This avoids misusing T-15/T-5 odds as a final realised return.
-    return {"had_prediction": True, "winner": winner, "top1_hit": top1_hit, "top3_contains_winner": top3_contains_winner, "stable_strategy_hit": int(any(row.get("horse_no") == winner_no for row in stable)) if stable else 0, "value_strategy_hit": int(any(row.get("horse_no") == winner_no for row in value)) if value else 0, "odds_drop_count": sum(bool(row.get("odds_drop_flag") or row.get("pre_gate_money_drop")) for row in ordered), "odds_drop_winner_count": int(any((row.get("odds_drop_flag") or row.get("pre_gate_money_drop")) and row.get("horse_no") == winner_no for row in ordered)), "settled_stake": None, "settled_net_return": None, "roi": None, "roi_status": "not_settled_without_explicit_final_dividend_mapping"}
+    value = [row for row in ordered if (num(row, "win_odds", "market_odds") or 0) >= 10.0 and (num(row, "place_odds", "place_market_odds") or 0) >= 3.5 and (num(row, "predicted_win_probability", "win_probability") or 0) >= 0.08 and (num(row, "predicted_place_probability", "place_probability") or 0) >= 0.80]
+    settlements = {"熱門穩攻_獨贏研究籃子": settle_win_strategy(stable, winner), "冷門突襲_獨贏研究籃子": settle_win_strategy(value, winner)}
+    # Aggregate only baskets with verified final Win settlement.  Place ROI remains
+    # N/A until jurisdiction-specific official place dividends can be normalised.
+    settled = [item for item in settlements.values() if item["status"] == "settled_official_final_win_odds"]
+    stake = sum(item["stake"] for item in settled) if settled else None
+    net_return = sum(item["net_return"] for item in settled) if settled else None
+    roi = net_return / stake if stake else None
+    return {"had_prediction": True, "winner": winner, "top1_hit": top1_hit, "top3_contains_winner": top3_contains_winner, "stable_strategy_hit": int(any(row.get("horse_no") == winner_no for row in stable)) if stable else 0, "value_strategy_hit": int(any(row.get("horse_no") == winner_no for row in value)) if value else 0, "odds_drop_count": sum(bool(row.get("odds_drop_flag") or row.get("pre_gate_money_drop")) for row in ordered), "odds_drop_winner_count": int(any((row.get("odds_drop_flag") or row.get("pre_gate_money_drop")) and row.get("horse_no") == winner_no for row in ordered)), "brier_score": field_brier_score(ordered, winner_no), "settled_stake": stake, "settled_net_return": net_return, "roi": roi, "roi_status": "win_only_research_baskets_settled_from_official_final_win_odds; place_roi_na_pending_normalized_official_place_dividends", "strategy_settlement": settlements}
 
 
 def render_report(scope: str, key: str, audit: dict, starters: list[dict], dividends: list[dict]) -> str:
     lines = ["# 📊 賽日覆盤與勝率檢討報告", "", f"- 範圍：`{scope}`", f"- 賽事：`{key}`", "", "## 官方前四名", "", "| 名次 | 馬號 | 馬名 | 馬位差 | 完成時間 |", "|---:|---:|---|---|---|"]
     for row in starters[:4]:
         lines.append(f"| {row.get('finish_pos_text') or '—'} | {row.get('horse_no') or '—'} | {row.get('horse_name') or '—'} | {row.get('margin_text') or '—'} | {row.get('finish_time') or '—'} |")
-    lines += ["", "## 模型檢討", "", f"- Top 1 命中：`{audit['top1_hit']}`。", f"- Top 3 包含頭馬：`{audit['top3_contains_winner']}`。", f"- 熱門穩攻命中：`{audit['stable_strategy_hit']}`；冷門突襲命中：`{audit['value_strategy_hit']}`。", f"- 🔥 閘前資金落飛：共 {audit['odds_drop_count']} 匹，頭馬屬此標記：`{audit['odds_drop_winner_count']}`。", f"- 投注 ROI：`N/A`（{audit.get('roi_status','缺少可稽核結算資料')}）。", "", "## 官方派彩", ""]
+    brier = audit.get("brier_score")
+    brier_text = "N/A" if brier is None else f"{float(brier):.4f}"
+    roi = audit.get("roi")
+    roi_text = "N/A" if roi is None else f"{float(roi):+.2%}"
+    lines += ["", "## 模型檢討", "", f"- Top 1 命中：`{audit['top1_hit']}`。", f"- Top 3 包含頭馬：`{audit['top3_contains_winner']}`。", f"- 熱門穩攻命中：`{audit['stable_strategy_hit']}`；冷門突襲命中：`{audit['value_strategy_hit']}`。", f"- 場內多馬勝率 Brier Score：`{brier_text}`（越低代表機率與實際頭馬結果較接近；僅限此場研究性審計）。", f"- 🔥 閘前資金落飛：共 {audit['odds_drop_count']} 匹，頭馬屬此標記：`{audit['odds_drop_winner_count']}`。", f"- 獨贏研究籃子合併 ROI：`{roi_text}`（{audit.get('roi_status','缺少可稽核結算資料')}）。", "", "## 策略結算", ""]
+    settlements = audit.get("strategy_settlement") or {}
+    if settlements:
+        lines += ["| 策略 | 狀態 | 馬號 | 注數 | 淨回報 | ROI |", "|---|---|---|---:|---:|---:|"]
+        for name, item in settlements.items():
+            selected = ", ".join(str(number) for number in item.get("selected_horse_nos", [])) or "—"
+            net = item.get("net_return")
+            item_roi = item.get("roi")
+            lines.append(f"| {name} | {item.get('status')} | {selected} | {item.get('stake', '—')} | {'—' if net is None else f'{float(net):+.2f}'} | {'—' if item_roi is None else f'{float(item_roi):+.2%}'} |")
+    else:
+        lines.append("沒有可結算的賽前策略籃子。")
+    lines += ["", "## 官方派彩", ""]
     if dividends:
         lines += ["| 彩池 | 勝出組合 | 派彩（HK$） |", "|---|---|---:|"]
         lines += [f"| {row['pool_name']} | {row['winning_combination']} | {row['dividend_hkd'] if row['dividend_hkd'] is not None else '—'} |" for row in dividends]
@@ -152,6 +203,7 @@ def main() -> int:
     # additive schema here makes archived-only local audits safe on existing V10.2
     # databases without changing historical races/starter records.
     conn.executescript(Path(args.schema).read_text(encoding="utf-8"))
+    ensure_audit_schema(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     if args.scope == "overseas":
         overseas_race_id, starters, dividends = official_overseas(conn, date_value, code, race_no)
@@ -171,10 +223,10 @@ def main() -> int:
         report_path.write_text(report, encoding="utf-8")
         if args.telegram:
             sent, telegram_status = telegram_send(f"📊 V10.2 賽日覆盤\n{args.race_key}\nTop1: {audit['top1_hit']} | Top3含頭馬: {audit['top3_contains_winner']}\n報告：{report_path.name}")
-    conn.execute("""INSERT INTO post_race_audits(audit_scope,race_key,audited_at_utc,had_prerace_prediction,top1_hit,top3_contains_winner,stable_strategy_hit,value_strategy_hit,odds_drop_count,odds_drop_winner_count,settled_stake,settled_net_return,roi,report_path,status,detail_json)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(audit_scope,race_key) DO UPDATE SET audited_at_utc=excluded.audited_at_utc,had_prerace_prediction=excluded.had_prerace_prediction,top1_hit=excluded.top1_hit,top3_contains_winner=excluded.top3_contains_winner,stable_strategy_hit=excluded.stable_strategy_hit,value_strategy_hit=excluded.value_strategy_hit,odds_drop_count=excluded.odds_drop_count,odds_drop_winner_count=excluded.odds_drop_winner_count,report_path=excluded.report_path,status=excluded.status,detail_json=excluded.detail_json""",
-                 (args.scope, args.race_key, utc_now(), int(audit["had_prediction"]), audit["top1_hit"], audit["top3_contains_winner"], audit["stable_strategy_hit"], audit["value_strategy_hit"], audit["odds_drop_count"], audit["odds_drop_winner_count"], audit["settled_stake"], audit["settled_net_return"], audit["roi"], str(report_path) if report_path else None, "audited" if audit["had_prediction"] else "archived_only", json.dumps({"telegram": telegram_status, "audit": audit}, ensure_ascii=False, default=str)))
+    conn.execute("""INSERT INTO post_race_audits(audit_scope,race_key,audited_at_utc,had_prerace_prediction,top1_hit,top3_contains_winner,stable_strategy_hit,value_strategy_hit,odds_drop_count,odds_drop_winner_count,settled_stake,settled_net_return,roi,brier_score,report_path,status,detail_json)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(audit_scope,race_key) DO UPDATE SET audited_at_utc=excluded.audited_at_utc,had_prerace_prediction=excluded.had_prerace_prediction,top1_hit=excluded.top1_hit,top3_contains_winner=excluded.top3_contains_winner,stable_strategy_hit=excluded.stable_strategy_hit,value_strategy_hit=excluded.value_strategy_hit,odds_drop_count=excluded.odds_drop_count,odds_drop_winner_count=excluded.odds_drop_winner_count,settled_stake=excluded.settled_stake,settled_net_return=excluded.settled_net_return,roi=excluded.roi,brier_score=excluded.brier_score,report_path=excluded.report_path,status=excluded.status,detail_json=excluded.detail_json""",
+                 (args.scope, args.race_key, utc_now(), int(audit["had_prediction"]), audit["top1_hit"], audit["top3_contains_winner"], audit["stable_strategy_hit"], audit["value_strategy_hit"], audit["odds_drop_count"], audit["odds_drop_winner_count"], audit["settled_stake"], audit["settled_net_return"], audit["roi"], audit["brier_score"], str(report_path) if report_path else None, "audited" if audit["had_prediction"] else "archived_only", json.dumps({"telegram": telegram_status, "audit": audit}, ensure_ascii=False, default=str)))
     conn.commit()
     print(json.dumps({"scope": args.scope, "race_key": args.race_key, "status": "audited" if audit["had_prediction"] else "archived_only", "report_path": str(report_path) if report_path else None, "telegram": telegram_status}, ensure_ascii=False, indent=2))
     return 0

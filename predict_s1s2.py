@@ -19,6 +19,7 @@ import numpy as np
 
 from overseas_cold_start_priors import ensure_prediction_prior_columns, hierarchical_prior
 from overseas_feature_enrichment import ensure_enrichment_schema, feature_enrichment, odds_drop_ratios
+from race_risk_guidance import build_race_guidance
 
 
 def utc_now() -> str:
@@ -74,10 +75,23 @@ def write_db(db_path: Path, race_id: int, generated_at: str, model_version: str,
 
 
 def markdown_report(payload: dict[str, Any]) -> str:
-    lines = ["# V10.2 S1/S2 海外轉播賽預測", "", "> **🌍 海外轉播賽 (S1/S2)：冷啟動先驗模式。** 本報告不會將香港 ELO 硬套用至海外馬匹；賠率不可用時，EV 及 Kelly 保持空白。", "", "| 馬號 | 馬匹 | 勝出率 | 位置率 | 獨贏賠率 | 獨贏 EV | 位置賠率 | 位置 EV | Kelly | 先驗／信心 | 落飛 |", "|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+    guidance = payload.get("race_guidance") or {}
+    top_probability = guidance.get("top1_win_probability")
+    top_text = "—" if top_probability is None else f"{top_probability:.2%}"
+    lines = ["# V10.2 S1/S2 海外轉播賽預測", "", "> **🌍 海外轉播賽 (S1/S2)：冷啟動先驗模式。** 本報告不會將香港 ELO 硬套用至海外馬匹；賠率不可用時，EV 及 Kelly 保持空白。", "", "## 場內分佈與研究性結構提示", "", f"- 出賽馬數：`{guidance.get('field_size', 0)}`；首選勝率：`{top_text}`。", f"- 風險標籤：**{guidance.get('dispersion_label') or '一般分佈風險'}**。", f"- 結構提示：{guidance.get('bet_recommendation') or '資料不足，未產生結構提示。'}", "", "| 馬號 | 馬匹 | 勝出率 | 位置率 | 獨贏賠率 | 獨贏 EV | 位置賠率 | 位置 EV | Kelly | 先驗／信心 | 落飛 |", "|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|"]
     for row in payload["predictions"]:
         fmt = lambda value, pct=False: "—" if value is None else (f"{value:.2%}" if pct else f"{value:.2f}")
         lines.append(f"| {row['horse_no']} | {row['horse_name']} | {fmt(row['predicted_win_probability'], True)} | {fmt(row['predicted_place_probability'], True)} | {fmt(row.get('win_odds'))} | {fmt(row.get('win_ev'), True)} | {fmt(row.get('place_odds'))} | {fmt(row.get('place_ev'), True)} | {fmt(row.get('kelly_fraction'), True)} | {row['cold_start_tier']}／{fmt(row.get('prior_confidence'), True)} | {'🔥' if row.get('odds_drop_flag') else '—'} |")
+    lines += ["", "## 💣 高賠率冷門提示", ""]
+    bombs = guidance.get("value_bomb_candidates", [])
+    if bombs:
+        lines += ["| 馬匹 | 標籤 | 獨贏賠率 | 模型 EV | 輔助優勢 |", "|---|---|---:|---:|---|"]
+        for item in bombs:
+            ev = item.get("win_ev")
+            ev_text = "—" if ev is None else f"{ev:+.3f}"
+            lines.append(f"| {item.get('horse_name') or '—'} | {item['label']} | {item['win_odds']:.2f} | {ev_text} | {'、'.join(item.get('reasons') or [])} |")
+    else:
+        lines.append("沒有同時符合高賠率及可驗證輕磅／內檔條件的馬匹。")
     lines += ["", "## 資料完整性", "", f"- 賽卡狀態：`{payload['input_status']}`。", f"- 賠率完整狀態：`{payload['odds_snapshot_status']}`。", "- EV 公式：`p × 香港賽馬會顯示派彩倍數 − 1`；只在該欄賠率可用時計算。", "- 此輸出是場內相對機率與研究訊號，並非收益保證。"]
     return "\n".join(lines) + "\n"
 
@@ -142,7 +156,8 @@ def main() -> int:
         }
         predictions.append(result)
     predictions.sort(key=lambda row: row["predicted_win_probability"], reverse=True)
-    output = {"schema_version": "v10.2_s1s2_prediction_v1", "label": "🌍 海外轉播賽 (S1/S2)", "generated_at_utc": generated_at, "model_version": args.model_version, "input_status": card.get("status"), "odds_snapshot_status": odds_status, "race": race, "simulations": max(args.simulations, 1000), "predictions": predictions, "data_warning": "海外馬匹未使用香港 ELO；分層先驗及特徵強化只使用公開賽前欄位與預測時點前的海外 archive。未有驗證 RPR／IFHA、久休日期、場地／G1歷史或完整 T-15/T-5 快照時，對應訊號會退回中性。落飛權重屬海外實驗性校準，須以時間外資料驗證。賠率空缺不計算 EV／Kelly。"}
+    guidance = build_race_guidance(predictions)
+    output = {"schema_version": "v10.2_s1s2_prediction_v2", "label": "🌍 海外轉播賽 (S1/S2)", "generated_at_utc": generated_at, "model_version": args.model_version, "input_status": card.get("status"), "odds_snapshot_status": odds_status, "race": race, "simulations": max(args.simulations, 1000), "predictions": predictions, "race_guidance": guidance, "data_warning": "海外馬匹未使用香港 ELO；分層先驗及特徵強化只使用公開賽前欄位與預測時點前的海外 archive。未有驗證 RPR／IFHA、久休日期、場地／G1歷史或完整 T-15/T-5 快照時，對應訊號會退回中性。落飛權重屬海外實驗性校準，須以時間外資料驗證。賠率空缺不計算 EV／Kelly。"}
     atomic_json(Path(args.output_json), output)
     Path(args.output_md).write_text(markdown_report(output), encoding="utf-8")
     if not args.no_write_db:

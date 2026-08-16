@@ -24,7 +24,7 @@ from bs4 import BeautifulSoup, Tag
 USER_AGENT = "Mozilla/5.0 (compatible; HKJCV10OverseasResearch/1.0; public-data-research)"
 FIXTURE_URL = "https://racing.hkjc.com/en-us/overseas/simulcast_fixture?y={season_code}"
 SUMMARY_URL = "https://racing.hkjc.com/en-us/overseas/race-summary?RaceDate={compact_date}&Racecourse={code}&redirect=Y"
-RESULT_URL = "https://racing.hkjc.com/racing/overseas/english/results.aspx?para=/{compact_date}/{code}/{race_no}"
+RESULT_URL = "https://racing.hkjc.com/en-us/overseas/results?RaceDate={compact_date}&Racecourse={code}&RaceNo={race_no}"
 RACECARD_URL = "https://racing.hkjc.com/en-us/overseas/race-summary?RaceDate={compact_date}&Racecourse={code}&redirect=Y&focus=Y"
 PARSER_VERSION = "v10.2-overseas-1"
 
@@ -85,6 +85,10 @@ def parse_margin(value: str | None) -> float | None:
     named = {"Nose": 0.05, "Short Head": 0.1, "Head": 0.2, "Neck": 0.3, "Short Neck": 0.25}
     if text.title() in named:
         return named[text.title()]
+    if re.fullmatch(r"\d+\s+\d+/\d+", text):
+        whole, fraction = text.split(maxsplit=1)
+        n, d = fraction.split("/")
+        return int(whole) + int(n) / int(d)
     if re.fullmatch(r"\d+/\d+", text):
         n, d = text.split("/")
         return int(n) / int(d)
@@ -170,11 +174,11 @@ class OfficialOverseasClient:
                             row => /\\d{2}\\/\\d{2}\\/\\d{4}/.test(row.innerText) && row.querySelector('a')
                         ) || document.body.innerText.includes('No Match Found')""", timeout=self.timeout * 1000)
                     elif wait_mode == "summary":
-                        page.wait_for_function("""() => document.body.innerText.includes('Race Summary') &&
+                        page.wait_for_function("""() => (document.body.innerText.includes('Race Summary') || document.body.innerText.includes('Meeting Summary')) &&
                             (document.body.innerText.includes('Race Card') || document.body.innerText.includes('Results'))""", timeout=self.timeout * 1000)
                     elif wait_mode == "result":
-                        page.wait_for_function("""() => Array.from(document.querySelectorAll('table tr')).some(
-                            row => /Dividend|Pool/.test(row.innerText)
+                        page.wait_for_function("""() => Array.from(document.querySelectorAll('table tbody tr')).some(
+                            row => row.querySelectorAll('td').length >= 3 && /\\S/.test(row.innerText)
                         ) || document.body.innerText.includes('No Match Found')""", timeout=self.timeout * 1000)
                     else:
                         page.wait_for_timeout(1500)
@@ -356,6 +360,17 @@ def header_position(headers: list[str], candidates: Iterable[str]) -> int | None
     return None
 
 
+def horse_name_position(headers: list[str]) -> int | None:
+    """Find an explicit horse-name column without mistaking ``Horse No`` for it."""
+    for index, header in enumerate(headers):
+        if header in {"horse", "horse name", "horse(s)"}:
+            return index
+    for index, header in enumerate(headers):
+        if "horse" in header and "no" not in header and "number" not in header:
+            return index
+    return None
+
+
 def parse_racecard_context(html: str) -> dict[str, Any]:
     """Extract only clearly labelled public race context; leave ambiguity as null."""
     text = normalize_space(BeautifulSoup(html, "html.parser").get_text(" ", strip=True))
@@ -379,7 +394,7 @@ def parse_racecard_starters(html: str) -> list[dict[str, Any]]:
     for table in soup.find_all("table"):
         headers = table_headers(table)
         horse_no_i = header_position(headers, ["horse number", "h.no", "馬號"])
-        horse_i = header_position(headers, ["horse"])
+        horse_i = horse_name_position(headers)
         if horse_no_i is None or horse_i is None:
             continue
         jockey_i = header_position(headers, ["jockey"])
@@ -430,6 +445,12 @@ def parse_racecard_starters(html: str) -> list[dict[str, Any]]:
 
 
 def parse_results(html: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Parse only labelled official result columns; unknown columns remain null.
+
+    Overseas result layouts vary by jurisdiction.  This parser therefore binds
+    values by visible headers and records the raw labelled row for audit rather
+    than guessing from a fixed column position.
+    """
     soup = BeautifulSoup(html, "html.parser")
     starters: list[dict[str, Any]] = []
     dividends: list[dict[str, Any]] = []
@@ -437,7 +458,15 @@ def parse_results(html: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]
         headers = table_headers(table)
         place_i = header_position(headers, ["pla.", "place", "pos."])
         horse_no_i = header_position(headers, ["h.no", "horse no", "horse number"])
-        horse_i = header_position(headers, ["horse"])
+        horse_i = horse_name_position(headers)
+        jockey_i = header_position(headers, ["jockey"])
+        trainer_i = header_position(headers, ["trainer"])
+        weight_i = header_position(headers, ["weight"])
+        draw_i = header_position(headers, ["draw"])
+        margin_i = header_position(headers, ["margin", "lengths behind", "dist."])
+        finish_time_i = header_position(headers, ["finish time", "fin. time", "time"])
+        win_odds_i = header_position(headers, ["win odds", "win odd", "w. odds", "w/o"])
+        place_odds_i = header_position(headers, ["place odds", "place odd", "p. odds", "p/o"])
         if place_i is not None and horse_no_i is not None and horse_i is not None:
             local: list[dict[str, Any]] = []
             for row in table.find_all("tr")[1:]:
@@ -446,9 +475,26 @@ def parse_results(html: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]
                     continue
                 horse_no = first_int(cells[horse_no_i])
                 horse = cells[horse_i]
-                if horse_no is None or not horse:
+                if horse_no is None or not horse or horse.lower() in {"horse", "horse name"}:
                     continue
-                local.append({"horse_no": horse_no, "horse_name": horse, "finish_pos_text": cells[place_i], "finish_pos": first_int(cells[place_i])})
+                margin_text = cells[margin_i] if margin_i is not None and margin_i < len(cells) else None
+                raw_fields = {headers[i]: cells[i] for i in range(min(len(headers), len(cells)))}
+                local.append({
+                    "horse_no": horse_no,
+                    "horse_name": horse,
+                    "finish_pos_text": cells[place_i],
+                    "finish_pos": first_int(cells[place_i]),
+                    "jockey": cells[jockey_i] if jockey_i is not None and jockey_i < len(cells) else None,
+                    "trainer": cells[trainer_i] if trainer_i is not None and trainer_i < len(cells) else None,
+                    "weight_lbs": first_float(cells[weight_i]) if weight_i is not None and weight_i < len(cells) else None,
+                    "draw": first_int(cells[draw_i]) if draw_i is not None and draw_i < len(cells) else None,
+                    "margin_text": margin_text,
+                    "margin_lengths": parse_margin(margin_text),
+                    "finish_time": cells[finish_time_i] if finish_time_i is not None and finish_time_i < len(cells) else None,
+                    "final_win_odds": first_float(cells[win_odds_i]) if win_odds_i is not None and win_odds_i < len(cells) else None,
+                    "final_place_odds": first_float(cells[place_odds_i]) if place_odds_i is not None and place_odds_i < len(cells) else None,
+                    "source_row_fields": raw_fields,
+                })
             if len(local) > len(starters):
                 starters = local
         normalized_headers = [item.upper() for item in headers]
@@ -486,10 +532,18 @@ def apply_racecard(conn: sqlite3.Connection, overseas_race_id: int, starters: li
 def apply_results(conn: sqlite3.Connection, overseas_race_id: int, starters: list[dict[str, Any]], dividends: list[dict[str, Any]], source_url: str) -> None:
     for row in starters:
         conn.execute(
-            """INSERT INTO overseas_starters(overseas_race_id,horse_no,horse_name,finish_pos_text,finish_pos,source_fields_json)
-            VALUES(?,?,?,?,?,?) ON CONFLICT(overseas_race_id,horse_no) DO UPDATE SET finish_pos_text=excluded.finish_pos_text,
-            finish_pos=excluded.finish_pos,horse_name=COALESCE(excluded.horse_name,overseas_starters.horse_name),source_fields_json=excluded.source_fields_json""",
-            (overseas_race_id, row["horse_no"], row["horse_name"], row.get("finish_pos_text"), row.get("finish_pos"), json.dumps(row, ensure_ascii=False)),
+            """INSERT INTO overseas_starters(overseas_race_id,horse_no,horse_name,jockey,trainer,weight_lbs,draw,finish_pos_text,finish_pos,margin_text,margin_lengths,finish_time,final_win_odds,final_place_odds,source_fields_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(overseas_race_id,horse_no) DO UPDATE SET
+            jockey=COALESCE(excluded.jockey,overseas_starters.jockey),trainer=COALESCE(excluded.trainer,overseas_starters.trainer),
+            weight_lbs=COALESCE(excluded.weight_lbs,overseas_starters.weight_lbs),draw=COALESCE(excluded.draw,overseas_starters.draw),
+            finish_pos_text=excluded.finish_pos_text,finish_pos=excluded.finish_pos,
+            margin_text=COALESCE(excluded.margin_text,overseas_starters.margin_text),
+            margin_lengths=COALESCE(excluded.margin_lengths,overseas_starters.margin_lengths),
+            finish_time=COALESCE(excluded.finish_time,overseas_starters.finish_time),
+            final_win_odds=COALESCE(excluded.final_win_odds,overseas_starters.final_win_odds),
+            final_place_odds=COALESCE(excluded.final_place_odds,overseas_starters.final_place_odds),
+            horse_name=COALESCE(excluded.horse_name,overseas_starters.horse_name),source_fields_json=excluded.source_fields_json""",
+            (overseas_race_id, row["horse_no"], row["horse_name"], row.get("jockey"), row.get("trainer"), row.get("weight_lbs"), row.get("draw"), row.get("finish_pos_text"), row.get("finish_pos"), row.get("margin_text"), row.get("margin_lengths"), row.get("finish_time"), row.get("final_win_odds"), row.get("final_place_odds"), json.dumps(row, ensure_ascii=False)),
         )
     for row in dividends:
         conn.execute(
@@ -497,7 +551,9 @@ def apply_results(conn: sqlite3.Connection, overseas_race_id: int, starters: lis
             VALUES(?,?,?,?,?) ON CONFLICT(overseas_race_id,pool_name,winning_combination) DO UPDATE SET dividend_hkd=excluded.dividend_hkd,source_url=excluded.source_url""",
             (overseas_race_id, row["pool_name"], row["winning_combination"], row["dividend_hkd"], source_url),
         )
-    conn.execute("UPDATE overseas_races SET race_status=?, fetched_at_utc=? WHERE overseas_race_id=?", ("completed" if starters else "partial", utc_now(), overseas_race_id))
+    valid_positions = [row for row in starters if isinstance(row.get("finish_pos"), int) and row.get("finish_pos") >= 1]
+    completed = len(valid_positions) >= 2 and any(row.get("finish_pos") == 1 for row in valid_positions)
+    conn.execute("UPDATE overseas_races SET race_status=?, fetched_at_utc=? WHERE overseas_race_id=?", ("completed" if completed else "partial", utc_now(), overseas_race_id))
     conn.commit()
 
 
@@ -538,6 +594,7 @@ def archive_meeting(conn: sqlite3.Connection, client: OfficialOverseasClient, me
     conn.execute("UPDATE overseas_meetings SET discovery_status='race_count_verified' WHERE meeting_id=?", (meeting_id,))
     conn.commit()
     archived = 0
+    partial = 0
     unavailable = 0
     for race_no in race_numbers:
         race_id = upsert_race(conn, meeting_id, meeting, race_no, race_status="discovered", racecard_url=meeting.summary_url, result_url=RESULT_URL.format(compact_date=compact_date(meeting.meeting_date), code=meeting.simulcast_code, race_no=race_no))
@@ -549,6 +606,7 @@ def archive_meeting(conn: sqlite3.Connection, client: OfficialOverseasClient, me
             result_html, result_doc = client.get_rendered(result_url, "result", wait_mode="result")
             result_starters, dividends = parse_results(result_html)
             apply_results(conn, race_id, result_starters, dividends, result_url)
+            parsed_status = conn.execute("SELECT race_status FROM overseas_races WHERE overseas_race_id=?", (race_id,)).fetchone()[0]
         except RuntimeError as exc:
             conn.execute("UPDATE overseas_races SET race_status='source_unavailable', fetched_at_utc=? WHERE overseas_race_id=?", (utc_now(), race_id))
             conn.commit()
@@ -556,12 +614,15 @@ def archive_meeting(conn: sqlite3.Connection, client: OfficialOverseasClient, me
             continue
         conn.execute("UPDATE overseas_races SET result_document_id=? WHERE overseas_race_id=?", (result_doc, race_id))
         conn.commit()
-        archived += 1
+        if parsed_status == "completed":
+            archived += 1
+        else:
+            partial += 1
     status = "ok" if archived == len(race_numbers) else "partial"
-    if unavailable:
+    if unavailable or partial:
         conn.execute("UPDATE overseas_meetings SET discovery_status='partial' WHERE meeting_id=?", (meeting_id,))
         conn.commit()
-    return {"meeting": meeting.meeting_date + " " + meeting.simulcast_code, "status": status, "races": archived, "races_source_unavailable": unavailable}
+    return {"meeting": meeting.meeting_date + " " + meeting.simulcast_code, "status": status, "races": archived, "races_partial": partial, "races_source_unavailable": unavailable}
 
 
 def select_meetings(conn: sqlite3.Connection, start: str, end: str, statuses: tuple[str, ...] = ("discovered", "partial", "source_unavailable")) -> list[OverseasMeeting]:
