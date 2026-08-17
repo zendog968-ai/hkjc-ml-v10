@@ -4,7 +4,7 @@
 # or overwrites a working tree. It only fast-forward synchronizes a clean main branch.
 set -uo pipefail
 
-export TZ="${TZ:-Asia/Hong_Kong}"
+export TZ="${HKJC_TIMEZONE:-Asia/Hong_Kong}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 REMOTE_NAME="${HKJC_REPO_REMOTE:-origin}"
@@ -37,9 +37,9 @@ write_report() {
 | 欄位 | 值 |
 |---|---|
 | 執行時間 | $(date '+%F %T %Z') |
-| 工作目錄 | \\`$ROOT_DIR\\` |
-| 分支 | \\`$BRANCH_NAME\\` |
-| 遠端 | \\`$REMOTE_NAME\\` |
+| 工作目錄 | $ROOT_DIR |
+| 分支 | $BRANCH_NAME |
+| 遠端 | $REMOTE_NAME |
 | 狀態 | $1 |
 
 ## Git 同步
@@ -62,7 +62,7 @@ if [[ ! -d .git ]]; then
   exit 2
 fi
 if [[ "$(git branch --show-current)" != "$BRANCH_NAME" ]]; then
-  write_report "BLOCKED" "目前分支不是 \\`$BRANCH_NAME\\`，未執行同步。" "未執行。"
+  write_report "BLOCKED" "目前分支不是 $BRANCH_NAME，未執行同步。" "未執行。"
   exit 0
 fi
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -84,7 +84,7 @@ remote_head="$(git rev-parse "$REMOTE_NAME/$BRANCH_NAME")"
 merge_base="$(git merge-base HEAD "$REMOTE_NAME/$BRANCH_NAME")"
 sync_note=""
 if [[ "$local_head" == "$remote_head" ]]; then
-  sync_note="本機已與 \\`$REMOTE_NAME/$BRANCH_NAME\\` 同步（${local_head:0:12}）。"
+  sync_note="本機已與 $REMOTE_NAME/$BRANCH_NAME 同步（${local_head:0:12}）。"
 elif [[ "$local_head" == "$merge_base" ]]; then
   git merge --ff-only "$REMOTE_NAME/$BRANCH_NAME"
   sync_note="已安全 fast-forward 至 ${remote_head:0:12}。"
