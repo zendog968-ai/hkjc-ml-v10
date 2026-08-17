@@ -120,6 +120,10 @@ run_check "敏感字串路徑掃描" bash -c '
 '
 run_check "S1/S2 特徵契約測試" "$PYTHON_BIN" verify_s1s2_feature_enrichment.py
 run_check "海外 archive／覆盤契約測試" "$PYTHON_BIN" verify_overseas_archive_audit_guidance.py
+run_check "近期 V10.2 預測回測" "$PYTHON_BIN" backtest_recent_v102_predictions.py \
+  --recent-races "${HKJC_RECENT_BACKTEST_RACES:-50}" \
+  --output-json "$ROOT_DIR/archive/backtest_reports/daily_recent_v102_backtest.json" \
+  --output-md "$ROOT_DIR/archive/backtest_reports/daily_recent_v102_backtest.md"
 
 printf -v review_text '%s\n' "${checks[@]}"
 if [[ $failed -ne 0 ]]; then
