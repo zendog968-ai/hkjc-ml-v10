@@ -626,8 +626,33 @@ def archive_meeting(conn: sqlite3.Connection, client: OfficialOverseasClient, me
 
 
 def select_meetings(conn: sqlite3.Connection, start: str, end: str, statuses: tuple[str, ...] = ("discovered", "partial", "source_unavailable")) -> list[OverseasMeeting]:
+    """Select resumable meetings, including legacy rows whose meeting status is stale.
+
+    Earlier V10.2 runs could leave a meeting as ``race_count_verified`` while a
+    child race was already marked partial or source_unavailable.  The EXISTS
+    clause makes these visible to --resume without promoting them to completed.
+    """
     placeholders = ",".join("?" for _ in statuses)
-    rows = conn.execute(f"SELECT meeting_date,simulcast_code,meeting_name,location,fixture_url,summary_url FROM overseas_meetings WHERE meeting_date BETWEEN ? AND ? AND discovery_status IN ({placeholders}) ORDER BY meeting_date,simulcast_code", (start, end, *statuses)).fetchall()
+    rows = conn.execute(f"""
+        SELECT m.meeting_date,m.simulcast_code,m.meeting_name,m.location,m.fixture_url,m.summary_url
+        FROM overseas_meetings AS m
+        WHERE m.meeting_date BETWEEN ? AND ?
+          AND (
+              m.discovery_status IN ({placeholders})
+              OR EXISTS (
+                  SELECT 1 FROM overseas_races AS r
+                  WHERE r.meeting_id=m.meeting_id
+                    AND r.race_status IN ('partial','source_unavailable')
+              )
+          )
+        ORDER BY
+          CASE WHEN m.discovery_status='discovered' THEN 0 ELSE 1 END,
+          COALESCE(
+            (SELECT MIN(r.fetched_at_utc) FROM overseas_races AS r WHERE r.meeting_id=m.meeting_id AND r.race_status IN ('partial','source_unavailable')),
+            m.discovered_at_utc
+          ),
+          m.meeting_date,m.simulcast_code
+    """, (start, end, *statuses)).fetchall()
     return [OverseasMeeting(row[0], row[1], row[2], row[3], row[4], row[5], None) for row in rows]
 
 
