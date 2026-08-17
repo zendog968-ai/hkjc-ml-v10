@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sqlite3
 import urllib.parse
@@ -25,8 +26,16 @@ def utc_now() -> str:
 def ensure_audit_schema(conn: sqlite3.Connection) -> None:
     """Apply additive audit migrations to databases created before V10.2.1."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(post_race_audits)")}
-    if "brier_score" not in columns:
-        conn.execute("ALTER TABLE post_race_audits ADD COLUMN brier_score REAL")
+    migrations = {
+        "brier_score": "REAL",
+        "brier_status": "TEXT",
+        "brier_field_size": "INTEGER",
+        "brier_uniform_baseline": "REAL",
+        "brier_probability_sum": "REAL",
+    }
+    for name, definition in migrations.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE post_race_audits ADD COLUMN {name} {definition}")
     conn.commit()
 
 
@@ -112,21 +121,102 @@ def settle_win_strategy(selections: list[dict], winner: dict[str, Any]) -> dict[
     return {"status": "settled_official_final_win_odds", "selected_horse_nos": selected_numbers, "stake": stake, "gross_return": gross_return, "net_return": net_return, "roi": net_return / stake}
 
 
-def field_brier_score(ordered: list[dict], winner_no: int | None) -> float | None:
-    probabilities = [num(row, "predicted_win_probability", "win_probability") for row in ordered]
-    if winner_no is None or not probabilities or any(value is None for value in probabilities):
+BRIER_SUM_TOLERANCE = 1e-6
+
+
+def normalize_horse_no(value: Any) -> int | None:
+    """Return a positive integer horse number without silently coercing fractions."""
+    if isinstance(value, bool) or value is None:
         return None
-    return float(sum((float(probability) - (1.0 if row.get("horse_no") == winner_no else 0.0)) ** 2 for row, probability in zip(ordered, probabilities)))
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value.is_integer() and value > 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            number = int(text)
+            return number if number > 0 else None
+    return None
+
+
+def brier_result(status: str, *, field_size: int | None = None, probability_sum: float | None = None, score: float | None = None) -> dict[str, Any]:
+    baseline = (1.0 - (1.0 / field_size)) if field_size and field_size > 0 else None
+    return {
+        "score": score,
+        "status": status,
+        "field_size": field_size,
+        "uniform_baseline": baseline,
+        "probability_sum": probability_sum,
+    }
+
+
+def validated_field_brier(predictions: list[dict], starters: list[dict]) -> dict[str, Any]:
+    """Score only a complete, normalized pre-race probability vector.
+
+    A non-score status is deliberate: the source rows remain auditable, but no
+    number is emitted when official runners and the pre-race field cannot be
+    matched one-to-one or when the vector is not a valid within-race probability.
+    """
+    official = [row for row in starters if normalize_horse_no(row.get("horse_no")) is not None]
+    if not official:
+        return brier_result("not_scored_no_official_field")
+    official_numbers = [normalize_horse_no(row.get("horse_no")) for row in official]
+    if len(set(official_numbers)) != len(official_numbers):
+        return brier_result("not_scored_duplicate_official_horse_no", field_size=len(official_numbers))
+    winner_rows = [row for row in official if row.get("finish_pos") == 1]
+    if len(winner_rows) != 1:
+        return brier_result("not_scored_missing_or_ambiguous_official_winner", field_size=len(official_numbers))
+    winner_no = normalize_horse_no(winner_rows[0].get("horse_no"))
+
+    if not predictions:
+        return brier_result("not_scored_no_prerace_prediction", field_size=len(official_numbers))
+    normalized: list[tuple[int, float]] = []
+    for row in predictions:
+        horse_no = normalize_horse_no(row.get("horse_no"))
+        if horse_no is None:
+            return brier_result("not_scored_invalid_prediction_horse_no", field_size=len(official_numbers))
+        raw_probability = num(row, "predicted_win_probability", "win_probability")
+        if raw_probability is None:
+            return brier_result("not_scored_missing_probability", field_size=len(official_numbers))
+        probability = float(raw_probability)
+        if not math.isfinite(probability):
+            return brier_result("not_scored_nonfinite_probability", field_size=len(official_numbers))
+        if probability < 0.0 or probability > 1.0:
+            return brier_result("not_scored_probability_out_of_range", field_size=len(official_numbers))
+        normalized.append((horse_no, probability))
+
+    prediction_numbers = [horse_no for horse_no, _ in normalized]
+    if len(set(prediction_numbers)) != len(prediction_numbers):
+        return brier_result("not_scored_duplicate_prediction_horse_no", field_size=len(official_numbers))
+    if winner_no not in prediction_numbers:
+        return brier_result("not_scored_winner_missing_from_prerace_field", field_size=len(official_numbers))
+    if set(prediction_numbers) != set(official_numbers):
+        return brier_result("not_scored_prerace_field_mismatch", field_size=len(official_numbers))
+
+    probability_sum = float(sum(probability for _, probability in normalized))
+    if not math.isfinite(probability_sum) or abs(probability_sum - 1.0) > BRIER_SUM_TOLERANCE:
+        return brier_result("not_scored_probability_sum_not_one", field_size=len(official_numbers), probability_sum=probability_sum)
+    score = float(sum((probability - (1.0 if horse_no == winner_no else 0.0)) ** 2 for horse_no, probability in normalized))
+    return brier_result("scored", field_size=len(official_numbers), probability_sum=probability_sum, score=score)
 
 
 def audit_predictions(predictions: list[dict], starters: list[dict]) -> dict[str, Any]:
+    brier = validated_field_brier(predictions, starters)
     winner = next((row for row in starters if row.get("finish_pos") == 1), None)
+    brier_fields = {
+        "brier_score": brier["score"],
+        "brier_status": brier["status"],
+        "brier_field_size": brier["field_size"],
+        "brier_uniform_baseline": brier["uniform_baseline"],
+        "brier_probability_sum": brier["probability_sum"],
+    }
     if not winner or not predictions:
-        return {"had_prediction": bool(predictions), "winner": winner, "top1_hit": None, "top3_contains_winner": None, "stable_strategy_hit": None, "value_strategy_hit": None, "odds_drop_count": 0, "odds_drop_winner_count": 0, "brier_score": None, "settled_stake": None, "settled_net_return": None, "roi": None, "roi_status": "not_auditable_without_both_prediction_and_official_winner", "strategy_settlement": {}}
+        return {"had_prediction": bool(predictions), "winner": winner, "top1_hit": None, "top3_contains_winner": None, "stable_strategy_hit": None, "value_strategy_hit": None, "odds_drop_count": 0, "odds_drop_winner_count": 0, "settled_stake": None, "settled_net_return": None, "roi": None, "roi_status": "not_auditable_without_both_prediction_and_official_winner", "strategy_settlement": {}, **brier_fields}
     ordered = sorted(predictions, key=lambda row: num(row, "predicted_win_probability", "win_probability") or 0.0, reverse=True)
-    winner_no = winner.get("horse_no")
-    top1_hit = int(ordered[0].get("horse_no") == winner_no) if ordered else 0
-    top3_contains_winner = int(any(row.get("horse_no") == winner_no for row in ordered[:3]))
+    winner_no = normalize_horse_no(winner.get("horse_no"))
+    top1_hit = int(normalize_horse_no(ordered[0].get("horse_no")) == winner_no) if ordered and winner_no is not None else None
+    top3_contains_winner = int(any(normalize_horse_no(row.get("horse_no")) == winner_no for row in ordered[:3])) if winner_no is not None else None
     stable = [row for row in ordered if (num(row, "predicted_win_probability", "win_probability") or 0) >= 0.10 or (num(row, "predicted_place_probability", "place_probability") or 0) >= 0.85]
     value = [row for row in ordered if (num(row, "win_odds", "market_odds") or 0) >= 10.0 and (num(row, "place_odds", "place_market_odds") or 0) >= 3.5 and (num(row, "predicted_win_probability", "win_probability") or 0) >= 0.08 and (num(row, "predicted_place_probability", "place_probability") or 0) >= 0.80]
     settlements = {"熱門穩攻_獨贏研究籃子": settle_win_strategy(stable, winner), "冷門突襲_獨贏研究籃子": settle_win_strategy(value, winner)}
@@ -136,7 +226,7 @@ def audit_predictions(predictions: list[dict], starters: list[dict]) -> dict[str
     stake = sum(item["stake"] for item in settled) if settled else None
     net_return = sum(item["net_return"] for item in settled) if settled else None
     roi = net_return / stake if stake else None
-    return {"had_prediction": True, "winner": winner, "top1_hit": top1_hit, "top3_contains_winner": top3_contains_winner, "stable_strategy_hit": int(any(row.get("horse_no") == winner_no for row in stable)) if stable else 0, "value_strategy_hit": int(any(row.get("horse_no") == winner_no for row in value)) if value else 0, "odds_drop_count": sum(bool(row.get("odds_drop_flag") or row.get("pre_gate_money_drop")) for row in ordered), "odds_drop_winner_count": int(any((row.get("odds_drop_flag") or row.get("pre_gate_money_drop")) and row.get("horse_no") == winner_no for row in ordered)), "brier_score": field_brier_score(ordered, winner_no), "settled_stake": stake, "settled_net_return": net_return, "roi": roi, "roi_status": "win_only_research_baskets_settled_from_official_final_win_odds; place_roi_na_pending_normalized_official_place_dividends", "strategy_settlement": settlements}
+    return {"had_prediction": True, "winner": winner, "top1_hit": top1_hit, "top3_contains_winner": top3_contains_winner, "stable_strategy_hit": int(any(normalize_horse_no(row.get("horse_no")) == winner_no for row in stable)) if stable and winner_no is not None else 0, "value_strategy_hit": int(any(normalize_horse_no(row.get("horse_no")) == winner_no for row in value)) if value and winner_no is not None else 0, "odds_drop_count": sum(bool(row.get("odds_drop_flag") or row.get("pre_gate_money_drop")) for row in ordered), "odds_drop_winner_count": int(any((row.get("odds_drop_flag") or row.get("pre_gate_money_drop")) and normalize_horse_no(row.get("horse_no")) == winner_no for row in ordered)) if winner_no is not None else 0, "settled_stake": stake, "settled_net_return": net_return, "roi": roi, "roi_status": "win_only_research_baskets_settled_from_official_final_win_odds; place_roi_na_pending_normalized_official_place_dividends", "strategy_settlement": settlements, **brier_fields}
 
 
 def render_report(scope: str, key: str, audit: dict, starters: list[dict], dividends: list[dict]) -> str:
@@ -145,9 +235,14 @@ def render_report(scope: str, key: str, audit: dict, starters: list[dict], divid
         lines.append(f"| {row.get('finish_pos_text') or '—'} | {row.get('horse_no') or '—'} | {row.get('horse_name') or '—'} | {row.get('margin_text') or '—'} | {row.get('finish_time') or '—'} |")
     brier = audit.get("brier_score")
     brier_text = "N/A" if brier is None else f"{float(brier):.4f}"
+    brier_status = audit.get("brier_status") or "not_scored_unknown"
+    brier_field_size = audit.get("brier_field_size")
+    brier_baseline = audit.get("brier_uniform_baseline")
+    brier_sum = audit.get("brier_probability_sum")
+    brier_context = f"status={brier_status}; field={brier_field_size if brier_field_size is not None else '—'}; baseline={'—' if brier_baseline is None else f'{float(brier_baseline):.4f}'}; p_sum={'—' if brier_sum is None else f'{float(brier_sum):.6f}'}"
     roi = audit.get("roi")
     roi_text = "N/A" if roi is None else f"{float(roi):+.2%}"
-    lines += ["", "## 模型檢討", "", f"- Top 1 命中：`{audit['top1_hit']}`。", f"- Top 3 包含頭馬：`{audit['top3_contains_winner']}`。", f"- 熱門穩攻命中：`{audit['stable_strategy_hit']}`；冷門突襲命中：`{audit['value_strategy_hit']}`。", f"- 場內多馬勝率 Brier Score：`{brier_text}`（越低代表機率與實際頭馬結果較接近；僅限此場研究性審計）。", f"- 🔥 閘前資金落飛：共 {audit['odds_drop_count']} 匹，頭馬屬此標記：`{audit['odds_drop_winner_count']}`。", f"- 獨贏研究籃子合併 ROI：`{roi_text}`（{audit.get('roi_status','缺少可稽核結算資料')}）。", "", "## 策略結算", ""]
+    lines += ["", "## 模型檢討", "", f"- Top 1 命中：`{audit['top1_hit']}`。", f"- Top 3 包含頭馬：`{audit['top3_contains_winner']}`。", f"- 熱門穩攻命中：`{audit['stable_strategy_hit']}`；冷門突襲命中：`{audit['value_strategy_hit']}`。", f"- 場內多馬勝率 Brier Score：`{brier_text}`（`{brier_context}`；越低代表機率與實際頭馬結果較接近；僅限通過 field／機率校驗的研究性審計）。", f"- 🔥 閘前資金落飛：共 {audit['odds_drop_count']} 匹，頭馬屬此標記：`{audit['odds_drop_winner_count']}`。", f"- 獨贏研究籃子合併 ROI：`{roi_text}`（{audit.get('roi_status','缺少可稽核結算資料')}）。", "", "## 策略結算", ""]
     settlements = audit.get("strategy_settlement") or {}
     if settlements:
         lines += ["| 策略 | 狀態 | 馬號 | 注數 | 淨回報 | ROI |", "|---|---|---|---:|---:|---:|"]
@@ -223,10 +318,10 @@ def main() -> int:
         report_path.write_text(report, encoding="utf-8")
         if args.telegram:
             sent, telegram_status = telegram_send(f"📊 V10.2 賽日覆盤\n{args.race_key}\nTop1: {audit['top1_hit']} | Top3含頭馬: {audit['top3_contains_winner']}\n報告：{report_path.name}")
-    conn.execute("""INSERT INTO post_race_audits(audit_scope,race_key,audited_at_utc,had_prerace_prediction,top1_hit,top3_contains_winner,stable_strategy_hit,value_strategy_hit,odds_drop_count,odds_drop_winner_count,settled_stake,settled_net_return,roi,brier_score,report_path,status,detail_json)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(audit_scope,race_key) DO UPDATE SET audited_at_utc=excluded.audited_at_utc,had_prerace_prediction=excluded.had_prerace_prediction,top1_hit=excluded.top1_hit,top3_contains_winner=excluded.top3_contains_winner,stable_strategy_hit=excluded.stable_strategy_hit,value_strategy_hit=excluded.value_strategy_hit,odds_drop_count=excluded.odds_drop_count,odds_drop_winner_count=excluded.odds_drop_winner_count,settled_stake=excluded.settled_stake,settled_net_return=excluded.settled_net_return,roi=excluded.roi,brier_score=excluded.brier_score,report_path=excluded.report_path,status=excluded.status,detail_json=excluded.detail_json""",
-                 (args.scope, args.race_key, utc_now(), int(audit["had_prediction"]), audit["top1_hit"], audit["top3_contains_winner"], audit["stable_strategy_hit"], audit["value_strategy_hit"], audit["odds_drop_count"], audit["odds_drop_winner_count"], audit["settled_stake"], audit["settled_net_return"], audit["roi"], audit["brier_score"], str(report_path) if report_path else None, "audited" if audit["had_prediction"] else "archived_only", json.dumps({"telegram": telegram_status, "audit": audit}, ensure_ascii=False, default=str)))
+    conn.execute("""INSERT INTO post_race_audits(audit_scope,race_key,audited_at_utc,had_prerace_prediction,top1_hit,top3_contains_winner,stable_strategy_hit,value_strategy_hit,odds_drop_count,odds_drop_winner_count,settled_stake,settled_net_return,roi,brier_score,brier_status,brier_field_size,brier_uniform_baseline,brier_probability_sum,report_path,status,detail_json)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(audit_scope,race_key) DO UPDATE SET audited_at_utc=excluded.audited_at_utc,had_prerace_prediction=excluded.had_prerace_prediction,top1_hit=excluded.top1_hit,top3_contains_winner=excluded.top3_contains_winner,stable_strategy_hit=excluded.stable_strategy_hit,value_strategy_hit=excluded.value_strategy_hit,odds_drop_count=excluded.odds_drop_count,odds_drop_winner_count=excluded.odds_drop_winner_count,settled_stake=excluded.settled_stake,settled_net_return=excluded.settled_net_return,roi=excluded.roi,brier_score=excluded.brier_score,brier_status=excluded.brier_status,brier_field_size=excluded.brier_field_size,brier_uniform_baseline=excluded.brier_uniform_baseline,brier_probability_sum=excluded.brier_probability_sum,report_path=excluded.report_path,status=excluded.status,detail_json=excluded.detail_json""",
+                 (args.scope, args.race_key, utc_now(), int(audit["had_prediction"]), audit["top1_hit"], audit["top3_contains_winner"], audit["stable_strategy_hit"], audit["value_strategy_hit"], audit["odds_drop_count"], audit["odds_drop_winner_count"], audit["settled_stake"], audit["settled_net_return"], audit["roi"], audit["brier_score"], audit["brier_status"], audit["brier_field_size"], audit["brier_uniform_baseline"], audit["brier_probability_sum"], str(report_path) if report_path else None, "audited" if audit["had_prediction"] else "archived_only", json.dumps({"telegram": telegram_status, "audit": audit}, ensure_ascii=False, default=str)))
     conn.commit()
     print(json.dumps({"scope": args.scope, "race_key": args.race_key, "status": "audited" if audit["had_prediction"] else "archived_only", "report_path": str(report_path) if report_path else None, "telegram": telegram_status}, ensure_ascii=False, indent=2))
     return 0

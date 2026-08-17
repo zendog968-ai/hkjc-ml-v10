@@ -14,6 +14,7 @@ from pathlib import Path
 
 from filter_high_probability import run as run_filter
 from overseas_hkjc_core import apply_results, parse_results
+from post_race_audit import validated_field_brier
 from race_risk_guidance import build_race_guidance
 
 ROOT = Path(__file__).resolve().parent
@@ -72,14 +73,54 @@ def main() -> int:
         "--db", str(db_path), "--schema", str(ROOT / "schema_overseas_racing.sql"), "--prediction-json", str(prediction_path), "--report-dir", str(OUT / "reports"),
     ], cwd=ROOT, check=True)
     conn = sqlite3.connect(db_path)
-    audit = conn.execute("SELECT top1_hit,top3_contains_winner,stable_strategy_hit,value_strategy_hit,settled_stake,settled_net_return,roi,brier_score,status FROM post_race_audits WHERE audit_scope='overseas' AND race_key='2026-08-16:S1:1'").fetchone()
+    audit = conn.execute("SELECT top1_hit,top3_contains_winner,stable_strategy_hit,value_strategy_hit,settled_stake,settled_net_return,roi,brier_score,brier_status,brier_field_size,brier_uniform_baseline,brier_probability_sum,status FROM post_race_audits WHERE audit_scope='overseas' AND race_key='2026-08-16:S1:1'").fetchone()
     conn.close()
     assert audit is not None
     assert audit[0:4] == (0, 1, 1, 1)
     assert audit[4] == 4.0 and audit[5] == 6.0 and abs(audit[6] - 1.5) < 1e-12
-    assert abs(audit[7] - 0.78) < 1e-12 and audit[8] == "audited"
+    assert abs(audit[7] - 0.78) < 1e-12 and audit[8] == "scored" and audit[9] == 3
+    assert abs(audit[10] - (2.0 / 3.0)) < 1e-12 and abs(audit[11] - 1.0) < 1e-12 and audit[12] == "audited"
     report = (OUT / "reports" / "overseas_2026-08-16_S1_1.md").read_text(encoding="utf-8")
-    assert "Brier Score" in report and "策略結算" in report
+    assert "Brier Score" in report and "status=scored" in report and "策略結算" in report
+
+    official_field = [
+        {"horse_no": 1, "finish_pos": 2},
+        {"horse_no": 2, "finish_pos": 1},
+        {"horse_no": 3, "finish_pos": 3},
+    ]
+    string_horse_nos = [
+        {"horse_no": "1", "predicted_win_probability": 0.50},
+        {"horse_no": "2", "predicted_win_probability": 0.30},
+        {"horse_no": "3", "predicted_win_probability": 0.20},
+    ]
+    normalized_brier = validated_field_brier(string_horse_nos, official_field)
+    assert normalized_brier["status"] == "scored" and abs(normalized_brier["score"] - 0.78) < 1e-12
+    assert abs(normalized_brier["uniform_baseline"] - (2.0 / 3.0)) < 1e-12
+
+    invalid_brier_cases = {
+        "winner_missing": ([
+            {"horse_no": 1, "predicted_win_probability": 0.50},
+            {"horse_no": 3, "predicted_win_probability": 0.50},
+        ], "not_scored_winner_missing_from_prerace_field"),
+        "field_mismatch": ([
+            {"horse_no": 1, "predicted_win_probability": 0.50},
+            {"horse_no": 2, "predicted_win_probability": 0.30},
+            {"horse_no": 4, "predicted_win_probability": 0.20},
+        ], "not_scored_prerace_field_mismatch"),
+        "duplicate_horse_no": ([
+            {"horse_no": 1, "predicted_win_probability": 0.50},
+            {"horse_no": 2, "predicted_win_probability": 0.30},
+            {"horse_no": 2, "predicted_win_probability": 0.20},
+        ], "not_scored_duplicate_prediction_horse_no"),
+        "probability_sum": ([
+            {"horse_no": 1, "predicted_win_probability": 0.40},
+            {"horse_no": 2, "predicted_win_probability": 0.30},
+            {"horse_no": 3, "predicted_win_probability": 0.20},
+        ], "not_scored_probability_sum_not_one"),
+    }
+    for case_name, (case_predictions, expected_status) in invalid_brier_cases.items():
+        case_result = validated_field_brier(case_predictions, official_field)
+        assert case_result["score"] is None and case_result["status"] == expected_status, case_name
 
     high_dispersion_rows = []
     for horse_no in range(1, 15):
@@ -112,12 +153,15 @@ def main() -> int:
             "incomplete_results_not_silently_completed": True,
             "official_final_win_roi_settlement": True,
             "field_brier_score_written": True,
+            "brier_horse_no_normalization": True,
+            "brier_winner_and_field_match_gate": True,
+            "brier_probability_sum_gate": True,
             "strategy_settlement_reported": True,
             "high_dispersion_single_banker_warning": True,
             "positive_ev_light_weight_or_inside_draw_value_flag": True,
             "warning_and_value_labels_rendered_in_prerace_report": True,
         },
-        "audit": {"top1_hit": audit[0], "top3_contains_winner": audit[1], "roi": audit[6], "brier_score": audit[7]},
+        "audit": {"top1_hit": audit[0], "top3_contains_winner": audit[1], "roi": audit[6], "brier_score": audit[7], "brier_status": audit[8], "brier_field_size": audit[9], "brier_uniform_baseline": audit[10], "brier_probability_sum": audit[11]},
         "guidance": guidance,
     }
     (OUT / "validation.json").write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
