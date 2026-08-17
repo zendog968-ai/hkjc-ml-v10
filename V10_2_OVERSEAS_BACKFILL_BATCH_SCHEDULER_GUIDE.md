@@ -50,11 +50,11 @@ cd /home/ubuntu/hkjc_v10_database
 chmod +x run_overseas_backfill_batch.sh
 ```
 
-使用 `crontab -e` 加入以下內容。此設定每天香港時間 03:15 執行，且**刻意不在每月 1 日執行**，避免與既有每月 1 日 02:00 的模型更新／重訓工作重疊。
+使用 `install_daily_archive_cron.sh --install` 安裝每日 03:15 HKT 排程。它會先執行 `auto_archive_results.py`，再執行有上限的海外回刷批次。每月 1 日的既有模型重訓維持於 02:00 HKT；兩者相隔 75 分鐘，且每日包裝器以 `flock` 防止重疊寫入。
 
 ```cron
 CRON_TZ=Asia/Hong_Kong
-15 3 2-31 * * cd /home/ubuntu/hkjc_v10_database && OVERSEAS_BACKFILL_BATCH_SIZE=6 ./run_overseas_backfill_batch.sh >> archive/overseas_backfill_batches/cron.log 2>&1
+15 3 * * * /home/ubuntu/hkjc_v10_database/run_daily_archive_and_overseas_backfill.sh
 ```
 
 預設 6 個群組／日，267 個尚未完成群組理論上至少需 45 個成功批次；實際時間取決於 HKJC 官方頁是否提供可解析 results，以及其中 partial／source unavailable 的重試情況。
