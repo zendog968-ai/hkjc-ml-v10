@@ -518,6 +518,22 @@ def crawl_meetings(
         day_html = client.get(day_url)
         actual_race_nos = parse_actual_race_numbers(day_html)
         if not actual_race_nos:
+            page_text = normalize_space(BeautifulSoup(day_html, "html.parser").get_text(" ", strip=True))
+            # 歷史賽期表偶爾會出現帶 ST/HV 圖示但沒有本地正式賽事的日期。
+            # 只在官方全場賽果頁明示無相關資料時安全略過，其他未知結構仍停止以保護資料品質。
+            if "沒有相關資料" in page_text:
+                client._log(day_url, 200, "no_official_local_results", "ResultsAll states no related data; meeting skipped")
+                db.execute(
+                    "DELETE FROM meetings WHERE race_date=? AND racecourse=?",
+                    (meeting.race_date, meeting.racecourse),
+                )
+                db.commit()
+                logging.warning(
+                    "%s %s：官方全場賽果頁明示沒有相關資料，已略過非正式本地賽日。",
+                    meeting.race_date,
+                    meeting.racecourse,
+                )
+                continue
             raise ValueError(f"未能由官方全場賽果頁核實 {meeting.race_date} {meeting.racecourse} 的場次。")
         db.execute(
             "UPDATE meetings SET scheduled_races=? WHERE race_date=? AND racecourse=?",
