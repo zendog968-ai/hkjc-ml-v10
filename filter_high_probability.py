@@ -41,6 +41,29 @@ def signed_ev(value: float | None) -> str:
     return "—" if value is None else f"{value:+.3f}"
 
 
+def load_v103_bayesian_disclosure(path: str | None) -> dict[str, Any] | None:
+    """Load a parallel V10.3 sidecar without allowing it to influence V10.2 logic."""
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "bayesian_status": "unavailable_invalid_sidecar",
+            "reason": f"無法讀取 V10.3 sidecar：{type(exc).__name__}",
+            "formal_probability_replacement": False,
+            "rows": [],
+        }
+    if payload.get("formal_probability_replacement") is not False:
+        return {
+            "bayesian_status": "unavailable_invalid_sidecar",
+            "reason": "V10.3 sidecar 未明確聲明不替換正式機率；已拒絕披露。",
+            "formal_probability_replacement": False,
+            "rows": [],
+        }
+    return payload
+
+
 def candidate_row(row: dict[str, Any]) -> dict[str, Any] | None:
     horse = str(row.get("horse_name") or "").strip()
     win_probability = finite_number(row.get("predicted_win_probability"))
@@ -111,13 +134,23 @@ def race_label(prediction: dict[str, Any]) -> str:
     return f"{date} {course} {suffix}".strip()
 
 
-def build_message(label: str, strategies: dict[str, list[dict[str, Any]]], guidance: dict[str, Any]) -> str:
+def build_message(label: str, strategies: dict[str, list[dict[str, Any]]], guidance: dict[str, Any], bayesian: dict[str, Any] | None = None) -> str:
     lines = [f"V10.2 賽前模型篩選｜{label}", "僅供研究參考；賠率及出賽狀態以官方最後公布為準。"]
     if guidance.get("dispersion_warning"):
         lines.append("⚠️【高爆冷風險亂局】嚴禁以單一熱門作單膽。")
     uncertainty = guidance.get("uncertainty") or {}
     if uncertainty.get("low_separation_warning"):
         lines.append(str(uncertainty.get("label") or "⚠️【低分離度】場內排序缺乏足夠分離，不適合作單膽。"))
+    if bayesian is not None:
+        status = str(bayesian.get("bayesian_status") or "unavailable")
+        if status == "available_research_only":
+            lines.append(
+                "V10.3 貝氏不確定性披露（不改動 V10.2）："
+                f"首選穩定度{percentage(finite_number(bayesian.get('top1_rank_stability')))}／"
+                f"後驗熵{finite_number(bayesian.get('posterior_entropy_mean')) or 0.0:.4f}。"
+            )
+        else:
+            lines.append(f"V10.3 貝氏覆蓋層：{status}（V10.2 正式機率維持不變）。")
     lines.append(f"結構提示：{guidance['bet_recommendation']}")
     for category, selections in strategies.items():
         for item in selections:
@@ -182,6 +215,29 @@ def build_markdown(output: dict[str, Any]) -> str:
         ])
     else:
         lines.append(f"- 不確定性診斷：`{uncertainty.get('status', 'unavailable')}`／`{uncertainty.get('reason', 'unknown')}`；不改動模型機率。")
+    bayesian = output.get("v103_bayesian_disclosure")
+    if bayesian is not None:
+        lines.extend(["", "## V10.3 貝氏校準／不確定性披露（研究性）", ""])
+        status = str(bayesian.get("bayesian_status") or "unavailable")
+        if status == "available_research_only":
+            lines.extend([
+                "> 此區塊只披露後驗不確定性；V10.2 `predicted_win_probability`、排序、EV 與 Kelly 完全不變。",
+                "",
+                f"- V10.2 首選：`{bayesian.get('top1_v102_horse_name') or '—'}`；首選排名穩定度：`{percentage(finite_number(bayesian.get('top1_rank_stability')))}`。",
+                f"- 後驗正規化熵：`{finite_number(bayesian.get('posterior_entropy_mean')) or 0.0:.4f}`（P05 `{finite_number(bayesian.get('posterior_entropy_p05')) or 0.0:.4f}`；P95 `{finite_number(bayesian.get('posterior_entropy_p95')) or 0.0:.4f}`）。",
+                f"- 每次 posterior draw 場內機率守恆最大誤差：`{finite_number(bayesian.get('probability_sum_max_abs_error')) or 0.0:.2e}`。",
+                "",
+                "| 馬匹 | V10.2 勝率（保留） | 後驗均值 | P05 | P95 | 成分分歧敏感度 |",
+                "|---|---:|---:|---:|---:|---:|",
+            ])
+            for item in bayesian.get("rows") or []:
+                lines.append(
+                    f"| {item.get('horse_name') or '—'} | {percentage(finite_number(item.get('v102_predicted_win_probability')))} "
+                    f"| {percentage(finite_number(item.get('posterior_win_mean')))} | {percentage(finite_number(item.get('posterior_win_p05')))} "
+                    f"| {percentage(finite_number(item.get('posterior_win_p95')))} | {finite_number(item.get('posterior_component_disagreement')) or 0.0:.4f} |"
+                )
+        else:
+            lines.append(f"V10.3 overlay 目前不可用：`{status}`；原因：{bayesian.get('reason') or '未提供'}。V10.2 正式輸出維持不變。")
     lines.extend([
         "",
         "## 熱門穩攻",
@@ -225,13 +281,14 @@ def build_markdown(output: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(prediction_path: str, output_path: str, phone: str = DEFAULT_PHONE, markdown_output: str | None = None) -> dict[str, Any]:
+def run(prediction_path: str, output_path: str, phone: str = DEFAULT_PHONE, markdown_output: str | None = None, bayesian_overlay_path: str | None = None) -> dict[str, Any]:
     prediction = json.loads(Path(prediction_path).read_text(encoding="utf-8"))
     strategies = classify_predictions(prediction)
     guidance = build_race_guidance(prediction.get("predictions", []))
+    bayesian = load_v103_bayesian_disclosure(bayesian_overlay_path)
     selections = [item for items in strategies.values() for item in items]
     label = race_label(prediction)
-    message = build_message(label, strategies, guidance) if selections or guidance.get("value_bomb_candidates") else None
+    message = build_message(label, strategies, guidance, bayesian) if selections or guidance.get("value_bomb_candidates") else None
     output = {
         "schema_version": "v10_2_pre_race_filter_v2",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -244,6 +301,7 @@ def run(prediction_path: str, output_path: str, phone: str = DEFAULT_PHONE, mark
         },
         "strategies": strategies,
         "race_guidance": guidance,
+        "v103_bayesian_disclosure": bayesian,
         "selections": selections,
         "whatsapp": {
             "phone": "".join(char for char in phone if char.isdigit()),
@@ -265,8 +323,9 @@ def main() -> int:
     parser.add_argument("--output", default="high_probability_filter.json")
     parser.add_argument("--markdown-output", help="可選：輸出的 Markdown 報告路徑")
     parser.add_argument("--whatsapp-phone", default=DEFAULT_PHONE)
+    parser.add_argument("--bayesian-overlay", help="可選 V10.3 uncertainty sidecar；只作並列風險披露。")
     args = parser.parse_args()
-    print(json.dumps(run(args.prediction, args.output, args.whatsapp_phone, args.markdown_output), ensure_ascii=False, indent=2))
+    print(json.dumps(run(args.prediction, args.output, args.whatsapp_phone, args.markdown_output, args.bayesian_overlay), ensure_ascii=False, indent=2))
     return 0
 
 

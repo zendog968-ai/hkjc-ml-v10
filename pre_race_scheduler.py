@@ -111,9 +111,11 @@ def run_command(command: list[str], output_dir: Path, step: str, timeout: int) -
 
 
 def script_paths(project_dir: Path) -> dict[str, Path]:
-    names = {"racecard": "fetch_hkjc_racecard.py", "odds": "fetch_hkjc_live_odds.py", "predict": "predict.py", "filter": "filter_high_probability.py", "new_horse": "enrich_hkjc_new_horse_priors.py"}
+    names = {"racecard": "fetch_hkjc_racecard.py", "odds": "fetch_hkjc_live_odds.py", "predict": "predict.py", "filter": "filter_high_probability.py", "new_horse": "enrich_hkjc_new_horse_priors.py", "bayesian": "bayesian_calibration.py"}
     paths = {key: project_dir / name for key, name in names.items()}
-    missing = [path.name for key, path in paths.items() if key != "new_horse" and not path.exists()]
+    # The Bayesian overlay is optional and may be unavailable before its offline
+    # research fit.  It must never block V10.2 prediction or report generation.
+    missing = [path.name for key, path in paths.items() if key not in {"new_horse", "bayesian"} and not path.exists()]
     if missing: raise FileNotFoundError("缺少流程腳本：" + ", ".join(missing))
     return paths
 
@@ -140,13 +142,23 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
     if offset == min(DEFAULT_SNAPSHOT_MINUTES):
         prediction, csv_file = output_dir / "prediction.json", output_dir / "prediction.csv"
         early = output_dir / "odds_t_minus_15.json"; filtered, markdown = output_dir / "high_probability_filter.json", output_dir / "pre_race_report.md"
-        commands = [
-            ("predict", [python, str(paths["predict"]), "--db", str(project_dir / "hkjc_last_season.sqlite"), "--model", str(project_dir / "horse_model.pkl"), "--race-card", str(card), "--win-odds-overlay", str(win), "--place-odds-overlay", str(place), "--odds-snapshot-early", str(early), "--odds-snapshot-late", str(snapshot), "--output-json", str(prediction), "--output-csv", str(csv_file)], 180),
-            ("filter", [python, str(paths["filter"]), "--prediction", str(prediction), "--output", str(filtered), "--markdown-output", str(markdown)], 60),
-        ]
-        for name, command, timeout in commands:
-            result = run_command(command, output_dir, name, timeout); outcomes.append(result)
-            if result["returncode"]: return {"status": "failed", "failed_step": name, "output_dir": str(output_dir), "steps": outcomes}
+        sidecar = output_dir / "v103_bayesian_uncertainty.json"
+        predict_command = [python, str(paths["predict"]), "--db", str(project_dir / "hkjc_last_season.sqlite"), "--model", str(project_dir / "horse_model.pkl"), "--race-card", str(card), "--win-odds-overlay", str(win), "--place-odds-overlay", str(place), "--odds-snapshot-early", str(early), "--odds-snapshot-late", str(snapshot), "--output-json", str(prediction), "--output-csv", str(csv_file)]
+        result = run_command(predict_command, output_dir, "predict", 180); outcomes.append(result)
+        if result["returncode"]:
+            return {"status": "failed", "failed_step": "predict", "output_dir": str(output_dir), "steps": outcomes}
+        overlay_available = False
+        if paths["bayesian"].exists():
+            overlay_command = [python, str(paths["bayesian"]), "predict", "--model", str(project_dir / "models" / "v103_bayesian_calibration.npz"), "--prediction", str(prediction), "--output", str(sidecar), "--race-date", job.date.replace("/", "-"), "--racecourse", job.racecourse, "--race-no", str(job.race_no)]
+            overlay_result = run_command(overlay_command, output_dir, "v103_bayesian_overlay", 90); outcomes.append(overlay_result)
+            # Sidecar failures are disclosed in its log only; V10.2 must proceed.
+            overlay_available = overlay_result["returncode"] == 0 and sidecar.exists()
+        filter_command = [python, str(paths["filter"]), "--prediction", str(prediction), "--output", str(filtered), "--markdown-output", str(markdown)]
+        if overlay_available:
+            filter_command.extend(["--bayesian-overlay", str(sidecar)])
+        result = run_command(filter_command, output_dir, "filter", 60); outcomes.append(result)
+        if result["returncode"]:
+            return {"status": "failed", "failed_step": "filter", "output_dir": str(output_dir), "steps": outcomes}
         payload = load_json(filtered, {})
         provenance_path = output_dir / "v103_snapshot_provenance.json"
         atomic_write_json(provenance_path, {
@@ -165,7 +177,7 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
             "prediction_sha256": sha256_file(prediction),
             "post_race_labels_included": False,
         })
-        return {"status": "completed", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "steps": outcomes, "selection_count": payload.get("selection_count", 0), "markdown_report": str(markdown), "whatsapp_direct_link": (payload.get("whatsapp") or {}).get("direct_link"), "odds_status": load_json(meta, {}).get("status", "unknown"), "v103_snapshot_provenance": str(provenance_path)}
+        return {"status": "completed", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "steps": outcomes, "selection_count": payload.get("selection_count", 0), "markdown_report": str(markdown), "whatsapp_direct_link": (payload.get("whatsapp") or {}).get("direct_link"), "odds_status": load_json(meta, {}).get("status", "unknown"), "v103_bayesian_sidecar": str(sidecar) if overlay_available else None, "v103_snapshot_provenance": str(provenance_path)}
     return {"status": "snapshot_collected", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "snapshot": str(snapshot), "steps": outcomes, "odds_status": load_json(meta, {}).get("status", "unknown")}
 
 

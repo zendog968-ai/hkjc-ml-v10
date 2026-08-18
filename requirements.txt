@@ -8,3 +8,7 @@ joblib>=1.4
 playwright>=1.62
 PyYAML>=6.0
 catboost>=1.2
+
+# V10.3 Bayesian calibration / uncertainty overlay only; V10.2 core does not import these packages.
+numpyro>=0.21,<0.22
+jax[cpu]>=0.11,<0.12
