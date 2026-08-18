@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -42,6 +43,14 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2); handle.write("\n"); temporary = handle.name
     os.replace(temporary, path)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -109,7 +118,7 @@ def script_paths(project_dir: Path) -> dict[str, Path]:
     return paths
 
 
-def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Path, odds_min_interval: int) -> dict[str, Any]:
+def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Path, odds_min_interval: int, executed_at: datetime) -> dict[str, Any]:
     paths = script_paths(project_dir)
     for required in (project_dir / "hkjc_last_season.sqlite", project_dir / "horse_model.pkl"):
         if not required.exists(): raise FileNotFoundError(f"缺少模型資料：{required.name}")
@@ -139,7 +148,24 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
             result = run_command(command, output_dir, name, timeout); outcomes.append(result)
             if result["returncode"]: return {"status": "failed", "failed_step": name, "output_dir": str(output_dir), "steps": outcomes}
         payload = load_json(filtered, {})
-        return {"status": "completed", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "steps": outcomes, "selection_count": payload.get("selection_count", 0), "markdown_report": str(markdown), "whatsapp_direct_link": (payload.get("whatsapp") or {}).get("direct_link"), "odds_status": load_json(meta, {}).get("status", "unknown")}
+        provenance_path = output_dir / "v103_snapshot_provenance.json"
+        atomic_write_json(provenance_path, {
+            "schema_version": "v10_3_prerace_snapshot_provenance_v1",
+            "race_key": job.key,
+            "race_date": job.date.replace("/", "-"),
+            "racecourse": job.racecourse,
+            "race_no": job.race_no,
+            "scheduled_start_hkt": job.start_at.isoformat(),
+            "prediction_generated_hkt": executed_at.astimezone(HK_TZ).isoformat(),
+            "stage": f"T_MINUS_{offset}",
+            "source_kind": "pre_race_scheduler_t_minus_5",
+            "model_path": str(project_dir / "horse_model.pkl"),
+            "model_sha256": sha256_file(project_dir / "horse_model.pkl"),
+            "prediction_path": str(prediction),
+            "prediction_sha256": sha256_file(prediction),
+            "post_race_labels_included": False,
+        })
+        return {"status": "completed", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "steps": outcomes, "selection_count": payload.get("selection_count", 0), "markdown_report": str(markdown), "whatsapp_direct_link": (payload.get("whatsapp") or {}).get("direct_link"), "odds_status": load_json(meta, {}).get("status", "unknown"), "v103_snapshot_provenance": str(provenance_path)}
     return {"status": "snapshot_collected", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "snapshot": str(snapshot), "steps": outcomes, "odds_status": load_json(meta, {}).get("status", "unknown")}
 
 
@@ -152,7 +178,7 @@ def process(config_path: Path, project_dir: Path, output_root: Path, state_path:
             result["processed"].append({"job": job.key, "stage": stage_key, "status": "already_completed"}); continue
         planned = {"job": job.key, "stage": stage_key, "race_date": job.date, "racecourse": job.racecourse, "race_no": job.race_no, "scheduled_start": job.start_at.isoformat(), "target_trigger": (job.start_at - timedelta(minutes=offset)).isoformat()}
         if dry_run: result["processed"].append({**planned, "status": "dry_run_due"}); continue
-        try: outcome = execute_stage(job, offset, project_dir, output_root, odds_min_interval)
+        try:             outcome = execute_stage(job, offset, project_dir, output_root, odds_min_interval, now)
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc: outcome = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
         record = {**planned, "executed_at": now.isoformat(), **outcome}; job_state["stages"][stage_key] = record; result["processed"].append(record)
     if not dry_run: state["updated_at"] = now.isoformat(); atomic_write_json(state_path, state)
