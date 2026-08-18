@@ -35,8 +35,8 @@ if [[ "$(id -un)" != "ubuntu" ]]; then
   echo "安全限制：此範本為 ubuntu 使用者設計；目前使用者是 $(id -un)。" >&2
   exit 2
 fi
-if [[ ! -f "$PROJECT_ROOT/web_api.py" ]]; then
-  echo "找不到 $PROJECT_ROOT/web_api.py；請從專案根目錄的 deploy 腳本執行。" >&2
+if [[ ! -f "$PROJECT_ROOT/web_api.py" || ! -f "$PROJECT_ROOT/frontend/index.html" ]]; then
+  echo "找不到 web_api.py 或 frontend/index.html；請從包含 Dashboard 的專案版本執行。" >&2
   exit 2
 fi
 if [[ ! -f "$PROJECT_ROOT/deploy/systemd/$SERVICE_NAME" || ! -f "$PROJECT_ROOT/deploy/nginx/$NGINX_SITE" ]]; then
@@ -45,7 +45,7 @@ if [[ ! -f "$PROJECT_ROOT/deploy/systemd/$SERVICE_NAME" || ! -f "$PROJECT_ROOT/d
 fi
 
 sudo apt-get update -y
-sudo apt-get install -y nginx apache2-utils
+sudo apt-get install -y nginx apache2-utils acl
 if command -v uv >/dev/null 2>&1; then
   sudo uv pip install --system 'fastapi>=0.110,<1' 'uvicorn[standard]>=0.27,<1'
 else
@@ -53,6 +53,13 @@ else
 fi
 
 sudo -u ubuntu /usr/bin/python3 -c 'import fastapi, uvicorn; print("FastAPI/Uvicorn import: OK")'
+
+# Nginx runs as www-data and needs only traversal on parent directories plus
+# read/execute access to frontend assets. Do not expose the rest of the project.
+sudo setfacl -m u:www-data:--x /home/ubuntu
+sudo setfacl -m u:www-data:--x "$PROJECT_ROOT"
+sudo setfacl -R -m u:www-data:rX "$PROJECT_ROOT/frontend"
+sudo setfacl -d -m u:www-data:rX "$PROJECT_ROOT/frontend"
 
 if [[ -e /etc/nginx/sites-enabled/default ]]; then
   cat <<'NOTICE'

@@ -1,28 +1,34 @@
-# HKJC ML V10 read-only API reverse proxy.
-# This template listens on HTTP/80 for initial private-network deployment.
-# Basic Auth is not transport encryption: use HTTPS before exposing it publicly.
+# HKJC ML V10 Dashboard + read-only API reverse proxy.
+# HTTP/80 is intended for private-network bootstrap only. Basic Auth does not
+# encrypt credentials; configure HTTPS before public internet exposure.
 
 server {
     listen 80;
     listen [::]:80;
     server_name _;
 
+    root /home/ubuntu/hkjc_v10_database/frontend;
+    index index.html;
     server_tokens off;
     client_max_body_size 1k;
 
     access_log /var/log/nginx/hkjc-api.access.log;
     error_log /var/log/nginx/hkjc-api.error.log warn;
 
-    location / {
-        # Require a password before every API or OpenAPI request.
-        auth_basic "HKJC ML V10 API";
-        auth_basic_user_file /etc/nginx/hkjc-api.htpasswd;
+    # One password boundary protects both the HTML Dashboard and the API.
+    auth_basic "HKJC ML V10 Dashboard";
+    auth_basic_user_file /etc/nginx/hkjc-api.htpasswd;
 
-        # The service is read-only. Reject state-changing methods at Nginx too.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Cache-Control "no-store" always;
+
+    location ^~ /api/ {
+        # The API itself only supports GET/OPTIONS and performs no writes.
         limit_except GET HEAD OPTIONS {
             deny all;
         }
-
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -32,10 +38,34 @@ server {
         proxy_connect_timeout 5s;
         proxy_send_timeout 30s;
         proxy_read_timeout 30s;
+    }
 
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header Referrer-Policy "no-referrer" always;
-        add_header Cache-Control "no-store" always;
+    # Retain local health and FastAPI documentation behind the same Basic Auth.
+    location = /health {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /docs {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    location = /openapi.json {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        limit_except GET HEAD {
+            deny all;
+        }
+        try_files $uri $uri/ /index.html;
     }
 }
