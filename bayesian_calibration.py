@@ -331,10 +331,19 @@ def fit_model(
 
     guide = AutoNormal(model)
     svi = SVI(model, guide, Adam(0.02), Trace_ELBO())
-    rng_key = jax.random.PRNGKey(seed)
-    svi_state = svi.init(rng_key)
-    for _ in range(advi_steps):
-        svi_state, _ = svi.update(svi_state)
+    initial_state = svi.init(jax.random.PRNGKey(seed))
+
+    # Keep the identical SVI objective, optimizer, step count and PRNG sequence,
+    # but compile all updates into one device loop.  Calling ``svi.update`` from
+    # Python once per step causes costly host-to-JAX dispatch in three-fold runs.
+    @jax.jit
+    def run_svi_updates(state: Any) -> Any:
+        def body(_: int, current: Any) -> Any:
+            updated, _ = svi.update(current)
+            return updated
+        return jax.lax.fori_loop(0, advi_steps, body, state)
+
+    svi_state = run_svi_updates(initial_state)
     params = svi.get_params(svi_state)
     posterior_samples = guide.sample_posterior(jax.random.PRNGKey(seed + 1), params, sample_shape=(posterior_draws,))
 
