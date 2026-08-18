@@ -115,6 +115,9 @@ def build_message(label: str, strategies: dict[str, list[dict[str, Any]]], guida
     lines = [f"V10.2 賽前模型篩選｜{label}", "僅供研究參考；賠率及出賽狀態以官方最後公布為準。"]
     if guidance.get("dispersion_warning"):
         lines.append("⚠️【高爆冷風險亂局】嚴禁以單一熱門作單膽。")
+    uncertainty = guidance.get("uncertainty") or {}
+    if uncertainty.get("low_separation_warning"):
+        lines.append(str(uncertainty.get("label") or "⚠️【低分離度】場內排序缺乏足夠分離，不適合作單膽。"))
     lines.append(f"結構提示：{guidance['bet_recommendation']}")
     for category, selections in strategies.items():
         for item in selections:
@@ -169,6 +172,17 @@ def build_markdown(output: dict[str, Any]) -> str:
         f"- 出賽馬數：`{guidance['field_size']}`；首選勝率：`{percentage(guidance['top1_win_probability'])}`。",
         f"- 風險標籤：**{guidance['dispersion_label'] or '一般分佈風險'}**。",
         f"- 結構提示：{guidance['bet_recommendation']}",
+    ]
+    uncertainty = guidance.get("uncertainty") or {}
+    if uncertainty.get("status") == "available":
+        lines.extend([
+            f"- 首二機率：`{percentage(uncertainty.get('top1_probability'))}`／`{percentage(uncertainty.get('top2_probability'))}`；首二差距：`{percentage(uncertainty.get('top2_gap'))}`。",
+            f"- 正規化熵：`{uncertainty.get('normalized_entropy', 0.0):.4f}`；集成分歧（首選）：`{percentage(uncertainty.get('ensemble_disagreement_top1'))}`。",
+            f"- 不確定性標籤：**{uncertainty.get('label') or '未觸發低分離度提示'}**。",
+        ])
+    else:
+        lines.append(f"- 不確定性診斷：`{uncertainty.get('status', 'unavailable')}`／`{uncertainty.get('reason', 'unknown')}`；不改動模型機率。")
+    lines.extend([
         "",
         "## 熱門穩攻",
         "",
@@ -184,7 +198,7 @@ def build_markdown(output: dict[str, Any]) -> str:
         "",
         "## 💣 高賠率冷門提示",
         "",
-    ]
+    ])
     bombs = guidance.get("value_bomb_candidates", [])
     if bombs:
         lines += ["| 馬匹 | 標籤 | 獨贏賠率 | 模型 EV | 輔助優勢 |", "|---|---|---:|---:|---|"]
