@@ -97,6 +97,15 @@ def main() -> int:
     assert all(item["status"] == "monitoring_threshold_reached_waiting_for_full_walk" for item in cohorts.values()), cohorts
     assert first["rejected_snapshot_reasons"].get("prediction_rows_contain_post_race_field") == 1, first
     assert first["new_or_existing_record_status"].get("record_written") == 2, first
+    for model_sha, summary in cohorts.items():
+        canonical_path = Path(summary["canonical_training_csv_path"])
+        assert canonical_path.is_file(), summary
+        assert summary["canonical_training_csv_sha256"] == sha256(canonical_path), summary
+        assert summary["canonical_training_race_count"] == 1, summary
+        header = canonical_path.read_text(encoding="utf-8").splitlines()[0].split(",")
+        assert {"base_model_sha256", "lightgbm_calibrated_probability", "catboost_calibrated_probability"}.issubset(header), header
+        rows = canonical_path.read_text(encoding="utf-8").splitlines()[1:]
+        assert rows and rows[0].endswith(model_sha), rows
 
     second = process(make_args(root))
     assert second["new_or_existing_record_status"].get("already_recorded") == 2, second

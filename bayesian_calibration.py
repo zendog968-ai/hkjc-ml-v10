@@ -191,6 +191,81 @@ def load_frozen_csv(path: Path, require_target: bool = True) -> tuple[list[Froze
     return frozen, exclusions
 
 
+def read_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BayesianCalibrationError(f"無法讀取 {label}：{path}") from exc
+    if not isinstance(payload, dict):
+        raise BayesianCalibrationError(f"{label} 必須為 JSON object。")
+    return payload
+
+
+def validate_cohort_provenance(
+    manifest_path: Path,
+    input_path: Path,
+    base_model_path: Path,
+) -> dict[str, Any]:
+    """Validate a collector-produced immutable cohort before a formal fit.
+
+    The input CSV must be the collector's canonical materialization for exactly
+    one full base-model SHA-256 bucket.  This rejects copied, mixed-version, or
+    reconstructed CSVs even when their numerical rows appear plausible.
+    """
+    if not manifest_path.is_file():
+        raise BayesianCalibrationError(f"找不到 cohort provenance manifest：{manifest_path}")
+    if not input_path.is_file():
+        raise BayesianCalibrationError(f"找不到 cohort canonical CSV：{input_path}")
+    if not base_model_path.is_file():
+        raise BayesianCalibrationError(f"找不到 base model：{base_model_path}")
+    manifest = read_json_object(manifest_path, "cohort provenance manifest")
+    if manifest.get("schema_version") != "v10_3_unseen_cohort_manifest_v1":
+        raise BayesianCalibrationError("cohort provenance manifest schema 不相容。")
+    base_model_sha = sha256_file(base_model_path)
+    cohorts = manifest.get("model_cohorts")
+    if not isinstance(cohorts, dict):
+        raise BayesianCalibrationError("cohort provenance manifest 缺少 model_cohorts。")
+    cohort = cohorts.get(base_model_sha)
+    if not isinstance(cohort, dict):
+        raise BayesianCalibrationError("manifest 沒有目前 base-model SHA-256 的獨立 cohort；禁止混合或借用其他模型版本。")
+    canonical_text = str(cohort.get("canonical_training_csv_path") or "").strip()
+    expected_csv_sha = str(cohort.get("canonical_training_csv_sha256") or "").strip().lower()
+    expected_races = parse_int(cohort.get("canonical_training_race_count"))
+    fingerprint = str(cohort.get("cohort_fingerprint") or "").strip().lower()
+    if not canonical_text or len(expected_csv_sha) != 64 or any(char not in "0123456789abcdef" for char in expected_csv_sha):
+        raise BayesianCalibrationError("manifest 缺少 canonical training CSV 路徑或有效 SHA-256。")
+    if expected_races is None or expected_races < 1:
+        raise BayesianCalibrationError("manifest 缺少有效 canonical_training_race_count。")
+    if len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint):
+        raise BayesianCalibrationError("manifest 缺少有效 cohort_fingerprint。")
+    canonical_path = Path(canonical_text).expanduser().resolve()
+    if input_path.resolve() != canonical_path:
+        raise BayesianCalibrationError("fit 輸入不是 manifest 登記的 canonical training CSV；拒絕複製或重建檔案。")
+    actual_csv_sha = sha256_file(input_path)
+    if actual_csv_sha != expected_csv_sha:
+        raise BayesianCalibrationError("canonical training CSV SHA-256 與 manifest 不一致。")
+    with input_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        required = {"race_date", "racecourse", "race_no", "horse_name", "race_normalized_probability", "target_win", "base_model_sha256"}
+        if reader.fieldnames is None or not required.issubset(set(reader.fieldnames)):
+            raise BayesianCalibrationError("canonical training CSV 缺少 provenance 所需欄位。")
+        for line_no, row in enumerate(reader, start=2):
+            if str(row.get("base_model_sha256") or "").strip().lower() != base_model_sha:
+                raise BayesianCalibrationError(f"canonical training CSV 第 {line_no} 行的 base_model_sha256 不屬於目前模型。")
+    return {
+        "verification_status": "verified_immutable_unseen_cohort",
+        "manifest_path": str(manifest_path.resolve()),
+        "manifest_sha256": sha256_file(manifest_path),
+        "cohort_fingerprint": fingerprint,
+        "base_model_path": str(base_model_path.resolve()),
+        "base_model_sha256": base_model_sha,
+        "canonical_training_csv_path": str(input_path.resolve()),
+        "canonical_training_csv_sha256": actual_csv_sha,
+        "canonical_training_race_count": expected_races,
+        "cohort_record_count": parse_int(cohort.get("record_count")),
+    }
+
+
 def fit_model(
     races: list[FrozenRace],
     output_path: Path,
@@ -198,6 +273,7 @@ def fit_model(
     advi_steps: int,
     posterior_draws: int,
     seed: int,
+    cohort_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fit a small partially pooled NumPyro categorical calibration model offline."""
     if advi_steps < 100:
@@ -281,6 +357,10 @@ def fit_model(
         "v102_core_modified": False,
         "input_artifact_sha256": input_hash,
         "input_races": len(races),
+        "cohort_provenance": cohort_provenance or {
+            "verification_status": "unverified_exploratory_direct_api",
+            "notice": "直接呼叫 fit_model 的探索性研究工件不得作正式採納或賽前披露模型。",
+        },
         "courses": courses,
         "svi_steps": advi_steps,
         "posterior_draws": posterior_draws,
@@ -493,12 +573,17 @@ def overlay_prediction(
 
 
 def fit_command(args: argparse.Namespace) -> dict[str, Any]:
-    input_path = Path(args.predictions)
-    races, exclusions = load_frozen_csv(input_path, require_target=True)
+    input_path = Path(args.predictions).resolve()
+    provenance = validate_cohort_provenance(
+        Path(args.cohort_manifest).resolve(), input_path, Path(args.base_model).resolve(),
+    )
     if args.max_train_races is not None:
-        if args.max_train_races < 25:
-            raise BayesianCalibrationError("--max-train-races 必須至少為 25。")
-        races = races[-args.max_train_races:]
+        raise BayesianCalibrationError("已驗證 cohort fit 不允許 --max-train-races；必須使用 manifest 登記的完整同模型資料。")
+    races, exclusions = load_frozen_csv(input_path, require_target=True)
+    if exclusions:
+        raise BayesianCalibrationError(f"canonical cohort CSV 含被排除賽事：{dict(exclusions)}")
+    if len(races) != int(provenance["canonical_training_race_count"]):
+        raise BayesianCalibrationError("canonical cohort CSV 的可用賽事數與 manifest 登記計數不一致。")
     metadata = fit_model(
         races=races,
         output_path=Path(args.output_model),
@@ -506,19 +591,22 @@ def fit_command(args: argparse.Namespace) -> dict[str, Any]:
         advi_steps=args.advi_steps,
         posterior_draws=args.posterior_draws,
         seed=args.seed,
+        cohort_provenance=provenance,
     )
-    return {"status": "fit_complete_research_only", "model": metadata, "exclusions": dict(exclusions)}
+    return {"status": "fit_complete_research_only", "model": metadata, "cohort_provenance": provenance, "exclusions": dict(exclusions)}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="V10.3 NumPyro Bayesian calibration / uncertainty overlay (research only)")
     commands = parser.add_subparsers(dest="command", required=True)
     fit = commands.add_parser("fit", help="Offline fit from frozen settled V10.2 prediction CSV.")
-    fit.add_argument("--predictions", required=True, help="Saved V10.2 historical CSV with target_win for offline fit only.")
+    fit.add_argument("--predictions", required=True, help="Manifest 登記的 immutable unseen cohort canonical CSV；不可使用任意歷史 CSV。")
+    fit.add_argument("--cohort-manifest", required=True, help="collect_v103_unseen_cohort.py 寫出的 manifest_latest.json。")
+    fit.add_argument("--base-model", required=True, help="產生 cohort 的 horse_model.pkl；會即時計算完整 SHA-256。")
     fit.add_argument("--output-model", default=DEFAULT_MODEL, help="Output compressed posterior draw artifact (.npz).")
     fit.add_argument("--advi-steps", type=int, default=10_000, help="NumPyro AutoNormal SVI optimization steps.")
     fit.add_argument("--posterior-draws", type=int, default=400, help="Saved posterior draws.")
-    fit.add_argument("--max-train-races", type=int, help="Optional latest completed-race cap for a lightweight research fit.")
+    fit.add_argument("--max-train-races", type=int, help="保留作相容性提示；經驗證 cohort fit 會拒絕子樣本，以維持 manifest 可追溯性。")
     fit.add_argument("--seed", type=int, default=10301)
     predict = commands.add_parser("predict", help="Produce a parallel uncertainty sidecar from a frozen V10.2 prediction JSON.")
     predict.add_argument("--model", default=DEFAULT_MODEL, help="Fitted V10.3 posterior model artifact.")

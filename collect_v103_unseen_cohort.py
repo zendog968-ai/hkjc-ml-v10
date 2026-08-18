@@ -252,12 +252,30 @@ def cohort_fingerprint(records: list[dict[str, Any]]) -> str:
     return hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def csv_value(value: Any) -> str:
+    """Render provenance CSV cells without inventing missing model components."""
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.12f}" if math.isfinite(value) else ""
+    return str(value).replace('"', '""')
+
+
 def materialize_csv(records: list[dict[str, Any]], path: Path) -> None:
-    lines = ["race_date,racecourse,race_no,horse_name,race_normalized_probability,actual_win"]
+    lines = [
+        "race_date,racecourse,race_no,horse_name,race_normalized_probability,"
+        "lightgbm_calibrated_probability,catboost_calibrated_probability,target_win,base_model_sha256"
+    ]
     for record in sorted(records, key=lambda item: (item["scheduled_start_hkt"], item["race_key"])):
+        model_sha = str(record["model_sha256"])
         for row in record["predictions"]:
-            horse = str(row["horse_name"]).replace('"', '""')
-            lines.append(f'{record["race_date"]},{record["racecourse"]},{record["race_no"]},"{horse}",{float(row["predicted_win_probability"]):.12f},{int(row["actual_win"])}')
+            horse = csv_value(row["horse_name"])
+            probability = float(row["predicted_win_probability"])
+            lines.append(
+                f'{record["race_date"]},{record["racecourse"]},{record["race_no"]},"{horse}",'
+                f"{probability:.12f},{csv_value(row.get('lightgbm_calibrated_probability'))},"
+                f"{csv_value(row.get('catboost_calibrated_probability'))},{int(row['actual_win'])},{model_sha}"
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -307,6 +325,9 @@ def process(args: argparse.Namespace) -> dict[str, Any]:
         ordered = sorted(cohort, key=lambda item: (item["scheduled_start_hkt"], item["race_key"]))
         count = len(ordered)
         fingerprint = cohort_fingerprint(ordered)
+        canonical_csv = cohort_root / "canonical_training" / model_bucket(model_sha) / "v103_immutable_unseen_cohort.csv"
+        materialize_csv(ordered, canonical_csv)
+        canonical_csv_sha = sha256_file(canonical_csv)
         status = "collecting"
         evaluation: dict[str, Any] | None = None
         if count >= args.min_unseen_races and count < full_walk_requirement:
@@ -336,6 +357,10 @@ def process(args: argparse.Namespace) -> dict[str, Any]:
         model_summary[model_sha] = {
             "record_count": count,
             "cohort_fingerprint": fingerprint,
+            "canonical_training_csv_path": str(canonical_csv.resolve()),
+            "canonical_training_csv_sha256": canonical_csv_sha,
+            "canonical_training_race_count": count,
+            "canonical_training_schema": "v10_3_immutable_unseen_cohort_csv_v2",
             "first_scheduled_start_hkt": ordered[0]["scheduled_start_hkt"] if ordered else None,
             "last_scheduled_start_hkt": ordered[-1]["scheduled_start_hkt"] if ordered else None,
             "monitoring_threshold": args.min_unseen_races,

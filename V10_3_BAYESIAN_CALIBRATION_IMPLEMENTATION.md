@@ -14,7 +14,8 @@
 |---|---|
 | V10.2 正式機率 | 原始 `prediction.json` 只讀；sidecar 保存 `v102_predicted_win_probability` 鏡像以供比較。 |
 | 排名、EV 與 Kelly | `bayesian_calibration.py` 不載入或呼叫 V10.2 的 EV／Kelly 函式，也不寫入上述欄位。 |
-| 賽前／賽後隔離 | `fit` 僅能讀取已結算歷史 CSV 的 `target_win`；`predict` 不接受或使用賽後標籤。 |
+| 賽前／賽後隔離 | `fit` 只接受 collector 證明為 T-5 不可變快照、其後才以官方賽果結算的 canonical cohort CSV；`predict` 不接受或使用賽後標籤。 |
+| 模型版本隔離 | `fit` 重新計算 `horse_model.pkl` 完整 SHA-256，要求它存在於 manifest 的唯一 `model_cohorts` bucket，並核對 canonical CSV 每列 `base_model_sha256`。 |
 | 場內機率守恆 | 每一 posterior draw 在 sidecar 和回測中均驗證總和為 `1 ± 1e-6`。 |
 | 生產故障降級 | T-5 排程中的 overlay 為非阻斷步驟；未有模型、資料契約失敗或推論錯誤時，V10.2 仍照常產生原有報告。 |
 
@@ -49,17 +50,23 @@ q_ri = softmax(s_ri)
 
 ## 離線 fit 與賽前 sidecar
 
-離線 fit 必須使用已保存的、具唯一 `target_win=1` 的 V10.2 歷史預測 CSV。它不會重訓或修改 `horse_model.pkl`。
+離線 fit 只能使用 `collect_v103_unseen_cohort.py` 為單一模型版本 materialize 的 canonical CSV。呼叫端必須同時提供 collector 的 `manifest_latest.json` 與產生該 cohort 的 `horse_model.pkl`。程式會在 fit 前重新計算三者 SHA-256，並拒絕 CSV 路徑、CSV 雜湊、CSV 每列 base-model 雜湊、cohort fingerprint、賽事計數或模型版本有任何不一致的情況。它不會重訓或修改 `horse_model.pkl`。
 
 ```bash
 cd /home/ubuntu/hkjc_v10_database
+MODEL_SHA="$(sha256sum horse_model.pkl | awk '{print $1}')"
+# canonical CSV 的完整路徑和 SHA-256 必須已列於 manifest 的 model_cohorts[$MODEL_SHA]。
 python3 bayesian_calibration.py fit \
-  --predictions v102_multiseason_backtest_predictions.csv \
+  --predictions archive/v103_bayesian_cohort/canonical_training/${MODEL_SHA:0:16}/v103_immutable_unseen_cohort.csv \
+  --cohort-manifest archive/v103_bayesian_cohort/manifest_latest.json \
+  --base-model horse_model.pkl \
   --output-model models/v103_bayesian_calibration.npz \
   --advi-steps 10000 \
   --posterior-draws 400 \
   --seed 10301
 ```
+
+產生的 `.npz` metadata 會封存 manifest SHA-256、cohort fingerprint、base-model 完整 SHA-256、canonical CSV 完整 SHA-256 與 cohort 賽事計數。`--max-train-races` 會被正式 fit 拒絕，因為任意子樣本會破壞 manifest 的完整來源鏈。
 
 賽前產生 sidecar 時，必須保留 V10.2 原始預測 JSON，並由排程或呼叫端傳入已知的官方賽日、馬場與場次。若模型檔不存在，程式會寫出 `unavailable_model_artifact` sidecar，而非錯誤地使用後驗均值取代 V10.2。
 
