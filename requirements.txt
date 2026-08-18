@@ -8,3 +8,7 @@ joblib>=1.4
 playwright>=1.62
 PyYAML>=6.0
 catboost>=1.2
+
+# Read-only local web API; does not participate in V10.2/V10.3 prediction or scheduling.
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
