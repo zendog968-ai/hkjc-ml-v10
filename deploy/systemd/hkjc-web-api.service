@@ -1,0 +1,47 @@
+[Unit]
+Description=HKJC ML V10 Read-Only FastAPI Service
+Documentation=file:///home/ubuntu/hkjc_v10_database/V10_READONLY_WEB_API.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/home/ubuntu/hkjc_v10_database/web_api.py
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/hkjc_v10_database
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/hkjc-web-api.env
+ExecStart=/usr/bin/python3 -m uvicorn web_api:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=15
+UMask=0077
+
+# The API is read-only. These service hardening controls prevent it from
+# creating files, gaining privilege, or accessing host-level mutable state.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
