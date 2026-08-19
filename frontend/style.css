@@ -363,3 +363,68 @@ body {
   color: #394b59;
   font-size: .78rem;
 }
+
+/* Overseas S1/S2 public deep-data research panel. */
+.overseas-deep-badge {
+  background: #153e75;
+  color: #fff;
+  letter-spacing: .04em;
+}
+
+.overseas-deep-meta,
+.overseas-deep-status {
+  border-radius: .75rem;
+  padding: .8rem 1rem;
+  background: #f4f8fc;
+  border: 1px solid #d9e5f2;
+}
+
+.overseas-deep-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .55rem .9rem;
+  font-size: .79rem;
+  color: #425466;
+}
+
+.overseas-deep-status span {
+  background: #fff;
+  border: 1px solid #dce5ee;
+  border-radius: 999px;
+  padding: .25rem .55rem;
+}
+
+.overseas-n6-disabled {
+  align-self: flex-start;
+  background: #6b7280;
+  color: #fff;
+}
+
+.overseas-score {
+  color: #0b6b4b;
+  font-weight: 700;
+}
+
+.overseas-deep-table thead th {
+  background: #eaf2fb;
+  color: #173b67;
+  white-space: nowrap;
+}
+
+.overseas-deep-disclaimer,
+.overseas-deep-awaiting {
+  border-left: 3px solid #2b6cb0;
+  background: #f7fafc;
+  color: #4a5568;
+  padding: .85rem 1rem;
+  font-size: .82rem;
+}
+
+.overseas-deep-awaiting {
+  border-left-color: #a0aec0;
+}
+
+@media (max-width: 767.98px) {
+  .overseas-deep-status { gap: .4rem; }
+  .overseas-deep-status span { width: 100%; }
+}

@@ -33,6 +33,9 @@ DOUBLE_TRIO_ARTIFACT_SUFFIX = "double_trio_official.json"
 DOUBLE_TRIO_BACKTEST_SUMMARY_PATH = Path(
     os.getenv("HKJC_DOUBLE_TRIO_BACKTEST_SUMMARY", str(PROJECT_ROOT / "reports" / "double_trio_backtest" / "four_horse_summary.json"))
 ).expanduser().resolve()
+OVERSEAS_DEEP_RUNTIME_ROOT = Path(
+    os.getenv("HKJC_OVERSEAS_DEEP_RUNTIME_ROOT", str(PROJECT_ROOT / "runtime" / "overseas_deep"))
+).expanduser().resolve()
 JOB_DIRECTORY_RE = re.compile(r"^(?P<day>\d{2})_(?P<course>ST|HV)_R(?P<race_no>\d{1,2})$")
 LEGACY_JOB_DIRECTORY_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<course>ST|HV)_R(?P<race_no>\d{1,2})$")
 
@@ -77,6 +80,13 @@ def normalize_race_no(value: int) -> int:
     if not 1 <= value <= 20:
         raise HTTPException(status_code=422, detail="race_no 必須介乎 1 至 20。")
     return value
+
+
+def normalize_simulcast_code(value: str) -> str:
+    code = value.strip().upper()
+    if not re.fullmatch(r"S[1-9][0-9]*", code):
+        raise HTTPException(status_code=422, detail="simulcast_code 必須為 S1、S2 等官方代碼。")
+    return code
 
 
 def is_under_runtime(path: Path) -> bool:
@@ -138,6 +148,36 @@ def read_json_artifact(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail="prediction 工件頂層必須為 JSON object。")
     return payload
+
+
+def read_overseas_deep_artifact(date_value: Date, simulcast_code: str, race_no: int) -> dict[str, Any]:
+    """Read one fixed overseas deep-data artifact after payload identity validation.
+
+    The caller cannot select a filename.  The endpoint is intentionally isolated
+    from V10 local runtime, local SQLite and N6 enrichment.
+    """
+    if not OVERSEAS_DEEP_RUNTIME_ROOT.is_dir():
+        raise HTTPException(status_code=404, detail="尚未有海外深度資料工件。")
+    for path in sorted(OVERSEAS_DEEP_RUNTIME_ROOT.glob("*.json")):
+        try:
+            path.resolve().relative_to(OVERSEAS_DEEP_RUNTIME_ROOT)
+            if not path.is_file() or path.stat().st_size > MAX_JSON_BYTES:
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        race = payload.get("race") if isinstance(payload.get("race"), dict) else {}
+        n6 = payload.get("n6_integration") if isinstance(payload.get("n6_integration"), dict) else {}
+        if (
+            race.get("meeting_date") == date_value.isoformat()
+            and race.get("simulcast_code") == simulcast_code
+            and race.get("race_no") == race_no
+            and n6.get("status") == "disabled_non_hk"
+        ):
+            return payload
+    raise HTTPException(status_code=404, detail="找不到已驗證的海外深度資料工件。")
 
 
 def job_identity(job_dir: Path) -> tuple[Date, str, int] | None:
@@ -317,6 +357,19 @@ async def double_trio_for_date(
 async def double_trio_backtest_summary() -> dict[str, Any]:
     """Return only the allow-listed, cohort-isolated historical backtest summary."""
     return read_json_project_report(DOUBLE_TRIO_BACKTEST_SUMMARY_PATH)
+
+
+@app.get("/api/overseas-deep/{date}/{simulcast_code}/{race_no}", tags=["overseas-deep"])
+async def overseas_deep_for_race(
+    date: str = ApiPath(..., description="海外賽日，YYYY-MM-DD"),
+    simulcast_code: str = ApiPath(..., description="官方海外轉播代碼，例如 S1"),
+    race_no: int = ApiPath(..., description="海外場次"),
+) -> dict[str, Any]:
+    """Return a source-labelled overseas deep-data artifact without N6 enrichment."""
+    requested_date = parse_iso_date(date)
+    normalized_code = normalize_simulcast_code(simulcast_code)
+    normalized_race_no = normalize_race_no(race_no)
+    return read_overseas_deep_artifact(requested_date, normalized_code, normalized_race_no)
 
 
 @app.get("/api/report/{date}/{course}/{race_no}", response_class=PlainTextResponse, tags=["reports"])

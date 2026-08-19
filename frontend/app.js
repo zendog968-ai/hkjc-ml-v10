@@ -12,6 +12,8 @@
     filterSummary: document.getElementById('filterSummary'),
     doubleTrioSection: document.getElementById('doubleTrioSection'),
     doubleTrioContent: document.getElementById('doubleTrioContent'),
+    overseasDeepSection: document.getElementById('overseasDeepSection'),
+    overseasDeepContent: document.getElementById('overseasDeepContent'),
     reportSection: document.getElementById('reportSection'),
     reportContent: document.getElementById('reportContent'),
     emptyState: document.getElementById('emptyState'),
@@ -109,6 +111,59 @@
     elements.reportContent.replaceChildren();
     elements.filterSummary.textContent = '';
     elements.n6ModelSummary.textContent = '';
+  }
+
+  function overseasScore(value) {
+    const number = toFiniteNumber(value);
+    return number === null ? '—' : number.toFixed(2);
+  }
+
+  function overseasAvailabilityLabel(value) {
+    const labels = {
+      available_public: '公開可用',
+      unavailable_paid_or_restricted: '訂閱／受限',
+      unavailable_parse: '暫未取得',
+    };
+    return labels[value] || '未提供';
+  }
+
+  function renderOverseasDeep(payload) {
+    elements.overseasDeepContent.replaceChildren();
+    const race = payload?.race && typeof payload.race === 'object' ? payload.race : {};
+    const starters = Array.isArray(payload?.starters) ? payload.starters.slice() : [];
+    const availability = payload?.field_availability && typeof payload.field_availability === 'object' ? payload.field_availability : {};
+    if (payload?.scrape_run?.status !== 'complete' || payload?.n6_integration?.status !== 'disabled_non_hk' || !starters.length) {
+      const detail = payload?.n6_integration?.status !== 'disabled_non_hk'
+        ? '海外資料的 N6 隔離狀態無效；系統已安全停止呈現。'
+        : (payload?.scrape_run?.source_notes || '等待可驗證的公開海外賽事資料工件。');
+      elements.overseasDeepContent.innerHTML = `<div class="overseas-deep-awaiting rounded-3"><strong>S1海外深度資料暫未就緒</strong><br><span>${escapeHtml(detail)}</span></div>`;
+      elements.overseasDeepSection.classList.remove('d-none');
+      return;
+    }
+    starters.sort((left, right) => (toFiniteNumber(left.deep_rank) || 9999) - (toFiniteNumber(right.deep_rank) || 9999));
+    const rows = starters.map((row) => {
+      const distance = row.distance_runs === null || row.distance_runs === undefined ? '—' : `${escapeHtml(row.distance_wins ?? 0)}/${escapeHtml(row.distance_runs)}`;
+      const going = row.similar_going_runs === null || row.similar_going_runs === undefined ? '—' : `${escapeHtml(row.similar_going_wins ?? 0)}/${escapeHtml(row.similar_going_runs)}`;
+      const pedigree = [row.sire, row.dam, row.damsire].filter(Boolean).map(escapeHtml).join(' / ') || '—';
+      return `<tr><td class="fw-semibold">#${escapeHtml(row.deep_rank ?? '—')}</td><td>${escapeHtml(row.runner_no ?? '—')}</td><td><strong>${escapeHtml(row.horse_name || '未命名')}</strong><br><small class="text-secondary">檔 ${escapeHtml(row.draw_no ?? '—')} · ${escapeHtml(row.data_completeness || 'partial')}</small></td><td class="text-end">${escapeHtml(row.racing_post_rating ?? '—')}</td><td class="text-end">${escapeHtml(row.top_speed_rating ?? '—')}</td><td>${escapeHtml(distance)}</td><td>${escapeHtml(going)}</td><td><small>${pedigree}</small></td><td class="text-end overseas-score">${overseasScore(row.deep_composite_score)}</td><td class="text-end">${oddsNumber(row.hkjc_win_odds)}</td></tr>`;
+    }).join('');
+    const warnings = Array.isArray(payload?.scrape_run?.source_notes?.split(' | ')) ? payload.scrape_run.source_notes.split(' | ') : [];
+    elements.overseasDeepContent.innerHTML = `
+      <div class="overseas-deep-meta mb-3 d-flex flex-wrap justify-content-between gap-2"><div><strong>${escapeHtml(race.venue || '海外賽事')} ${escapeHtml(race.simulcast_code || 'S1')}-${escapeHtml(race.race_no || '—')}</strong><br><small class="text-secondary">${escapeHtml(race.hkt_start_time || '開跑時間待確認')} · ${escapeHtml(race.distance_text || '—')} · ${escapeHtml(race.going || 'Going 待確認')} · ${escapeHtml(race.declared_runners || starters.length)} 匹</small></div><span class="badge overseas-n6-disabled">N6 已停用（海外賽事）</span></div>
+      <div class="overseas-deep-status mb-3"><span>RPR：${escapeHtml(overseasAvailabilityLabel(availability.rpr))}</span><span>TS：${escapeHtml(overseasAvailabilityLabel(availability.top_speed))}</span><span>步速：${escapeHtml(overseasAvailabilityLabel(availability.pace_setup))}</span><span>HKJC 賠率：${escapeHtml(overseasAvailabilityLabel(availability.hkjc_odds))}</span></div>
+      <div class="table-responsive"><table class="table table-hover align-middle overseas-deep-table"><thead><tr><th>研究排名</th><th>馬號</th><th>馬匹</th><th class="text-end">RPR</th><th class="text-end">TS</th><th>路程勝／跑</th><th>相近 Going 勝／跑</th><th>血統（父／母／外祖父）</th><th class="text-end">公開綜合分</th><th class="text-end">HKJC 獨贏</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="overseas-deep-disclaimer mb-0">公開綜合分只按當次可驗證的 RPR、TS 及公開 At The Races 評分正規化；缺失欄位重新加權而不填補。它不是 V10.2 機率、EV、Kelly 或 N6 Neural Score，亦不構成投注指令。${warnings.length ? ` 來源狀態：${escapeHtml(warnings.join('；'))}` : ''}</p>`;
+    elements.overseasDeepSection.classList.remove('d-none');
+  }
+
+  async function loadOverseasDeep(requestedDate) {
+    try {
+      const payload = await request(`/api/overseas-deep/${encodeURIComponent(requestedDate)}/S1/1`);
+      if (elements.raceDate.value === requestedDate) renderOverseasDeep(payload);
+    } catch (error) {
+      elements.overseasDeepContent.innerHTML = `<div class="overseas-deep-awaiting rounded-3"><strong>S1海外深度資料暫不可讀取</strong><br><span>${escapeHtml(error.message)}</span></div>`;
+      elements.overseasDeepSection.classList.remove('d-none');
+    }
   }
 
   function renderRaceButtons(races) {
@@ -351,6 +406,7 @@
       const payload = await request(`/api/races/${encodeURIComponent(requestedDate)}`);
       state.date = requestedDate;
       renderRaceButtons(Array.isArray(payload.races) ? payload.races : []);
+      void loadOverseasDeep(requestedDate);
     } catch (error) {
       elements.raceList.innerHTML = '<p class="text-danger mb-0">無法讀取賽程。</p>';
       elements.raceCountBadge.textContent = '讀取失敗';
@@ -375,4 +431,5 @@
   elements.raceDate.value = hongKongToday();
   elements.loadRacesButton.addEventListener('click', loadRaces);
   checkHealth();
+  void loadOverseasDeep(elements.raceDate.value);
 })();
