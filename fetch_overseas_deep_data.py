@@ -157,14 +157,31 @@ def minmax(values: list[float], value: float | None) -> float | None:
     return 0.5 if math.isclose(low, high) else (value - low) / (high - low)
 
 
+def smoothed_win_rate(row: dict[str, Any], wins_key: str, runs_key: str) -> float | None:
+    """Use a Beta(1, 4) prior so thin public condition samples shrink safely."""
+    wins, runs = number(row.get(wins_key)), number(row.get(runs_key))
+    if wins is None or runs is None or runs < 0 or wins < 0 or wins > runs:
+        return None
+    return (wins + 1.0) / (runs + 5.0)
+
+
 def score_rows(rows: list[dict[str, Any]]) -> None:
     rpr_values = [float(row["racing_post_rating"]) for row in rows if row.get("racing_post_rating") is not None]
     ts_values = [float(row["top_speed_rating"]) for row in rows if row.get("top_speed_rating") is not None]
-    atr_values = [float(row["at_the_races_rating"]) for row in rows if row.get("at_the_races_rating") is not None]
+    distance_values = [value for row in rows if (value := smoothed_win_rate(row, "distance_wins", "distance_runs")) is not None]
+    going_values = [value for row in rows if (value := smoothed_win_rate(row, "similar_going_wins", "similar_going_runs")) is not None]
+    course_values = [value for row in rows if (value := smoothed_win_rate(row, "course_wins", "course_runs")) is not None]
     for row in rows:
         parts: list[tuple[float, float]] = []
-        for weight, values, key in ((0.55, rpr_values, "racing_post_rating"), (0.30, ts_values, "top_speed_rating"), (0.15, atr_values, "at_the_races_rating")):
-            scaled = minmax(values, number(row.get(key)))
+        component_specs = (
+            (0.50, rpr_values, number(row.get("racing_post_rating"))),
+            (0.25, ts_values, number(row.get("top_speed_rating"))),
+            (0.10, distance_values, smoothed_win_rate(row, "distance_wins", "distance_runs")),
+            (0.10, going_values, smoothed_win_rate(row, "similar_going_wins", "similar_going_runs")),
+            (0.05, course_values, smoothed_win_rate(row, "course_wins", "course_runs")),
+        )
+        for weight, values, value in component_specs:
+            scaled = minmax(values, value)
             if scaled is not None:
                 parts.append((weight, scaled))
         if not parts:
@@ -275,7 +292,7 @@ def main() -> int:
         "race": {"meeting_date": args.date, "simulcast_code": args.simulcast_code.upper(), "race_no": args.race_no, "venue": args.venue, "local_start_time": "13:50 BST", "hkt_start_time": "20:50 HKT", "source_status": "complete" if rp_rows else "degraded", **rp_race},
         "n6_integration": {"status": "disabled_non_hk", "message": "S1/S2 uses overseas deep-data scoring only; HK-trained N6 Neural Score is not invoked."},
         "field_availability": {"rpr": "available_public" if rp_rows else "unavailable_parse", "top_speed": "available_public" if rp_rows else "unavailable_parse", "pace_setup": "unavailable_paid_or_restricted", "timeform_tfr": "unavailable_paid_or_restricted", "hkjc_odds": "available_public" if odds else "unavailable_parse"},
-        "scoring_method": "Public-field min-max composite: RPR 55%, TS 30%, ATR public rating 15%; missing fields are reweighted, not imputed. This is an overseas research score, not V10 probability/EV/Kelly.",
+        "scoring_method": "Public-field min-max composite: RPR 50%, TS 25%, smoothed distance win-rate 10%, smoothed similar-going win-rate 10%, smoothed course win-rate 5%. Missing fields are reweighted, never imputed; condition rates use a Beta(1,4) prior. This is an overseas research score, not V10 probability/EV/Kelly.",
         "starters": rows,
         "raw_artifacts": {"racing_post": save_raw(Path(args.raw_dir), "racing_post", rp_html), "at_the_races": save_raw(Path(args.raw_dir), "at_the_races", atr_html)},
     }
