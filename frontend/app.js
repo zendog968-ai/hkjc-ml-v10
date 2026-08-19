@@ -191,6 +191,24 @@
     return amount === null ? '—' : `HK$${amount.toLocaleString('en-HK', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
   }
 
+  function oddsNumber(value) {
+    const number = toFiniteNumber(value);
+    return number === null ? '—' : number.toFixed(1);
+  }
+
+  function signedPercent(value) {
+    const number = toFiniteNumber(value);
+    if (number === null) return '快照未齊';
+    return `${number > 0 ? '+' : ''}${(number * 100).toFixed(1)}%`;
+  }
+
+  function oddsMovementClass(status) {
+    if (status === 'large_shortening') return 'odds-movement-shortening';
+    if (status === 'large_drift') return 'odds-movement-drift';
+    if (status === 'stable') return 'odds-movement-stable';
+    return 'odds-movement-unavailable';
+  }
+
   function renderDoubleTrio(strategy) {
     elements.doubleTrioContent.replaceChildren();
     const events = Array.isArray(strategy?.events) ? strategy.events : [];
@@ -208,23 +226,40 @@
       const eventCard = document.createElement('article');
       eventCard.className = 'double-trio-event mb-3';
       const plan = event.combination_plan || {};
+      const monitoringSummary = event.odds_monitoring_summary || {};
       const legs = Array.isArray(event.legs) ? event.legs : [];
+      const alertSummary = monitoringSummary.status === 'available'
+        ? (monitoringSummary.large_movement_count > 0
+          ? `<span class="badge odds-summary-alert">賠率大幅變動 ${escapeHtml(monitoringSummary.large_movement_count)} 匹</span>`
+          : '<span class="badge odds-summary-stable">賠率變動未達大幅門檻</span>')
+        : '<span class="badge odds-summary-unavailable">T-15／T-5 快照待齊</span>';
       const legHtml = legs.map((leg) => {
         const selections = Array.isArray(leg.selections) ? leg.selections : [];
-        const selectionHtml = selections.map((runner) => `
-          <div class="double-trio-selection">
-            <div class="d-flex align-items-center gap-2">
-              <span class="double-trio-selection-number">${escapeHtml(runner.horse_no)}</span>
-              <div><span class="fw-semibold">${escapeHtml(runner.horse_name)}</span><br><small class="text-secondary">聯合排名 #${escapeHtml(runner.joint_rank)} · Neural ${decimal(runner.n6_neural_score, 2)}</small></div>
-            </div>
-            <small class="text-end text-secondary">V10 EV ${decimal(runner.v10_ev_per_unit)}</small>
-          </div>`).join('');
-        return `<div class="col-lg-6"><section class="double-trio-leg"><div class="double-trio-leg-title mb-2">第 ${escapeHtml(leg.leg_no)} 關 · 第 ${escapeHtml(leg.race_no)} 場</div>${selectionHtml}</section></div>`;
+        const monitor = leg.odds_monitoring || {};
+        const movementRows = Array.isArray(monitor.selections) ? monitor.selections : [];
+        const movementByHorse = new Map(movementRows.map((row) => [String(row.horse_no), row]));
+        const snapshotMeta = monitor.status === 'available'
+          ? '<span class="small text-secondary">官方 T-15 → T-5 獨贏快照</span>'
+          : '<span class="small text-secondary">官方賠率快照未齊</span>';
+        const selectionHtml = selections.map((runner) => {
+          const movement = movementByHorse.get(String(runner.horse_no)) || {};
+          const status = movement.movement_status || 'snapshot_unavailable';
+          const label = movement.movement_label || '賠率快照未齊';
+          return `
+            <div class="double-trio-selection">
+              <div class="d-flex align-items-center gap-2">
+                <span class="double-trio-selection-number">${escapeHtml(runner.horse_no)}</span>
+                <div><span class="fw-semibold">${escapeHtml(runner.horse_name)}</span><br><small class="text-secondary">聯合排名 #${escapeHtml(runner.joint_rank)} · Neural ${decimal(runner.n6_neural_score, 2)}</small></div>
+              </div>
+              <div class="text-end"><small class="d-block text-secondary">V10 EV ${decimal(runner.v10_ev_per_unit)}</small><small class="odds-movement ${oddsMovementClass(status)}">${escapeHtml(label)} ${escapeHtml(signedPercent(movement.odds_change_ratio))}</small><small class="d-block text-secondary">T-15 ${oddsNumber(movement.odds_t_minus_15)} → T-5 ${oddsNumber(movement.odds_t_minus_5)}</small></div>
+            </div>`;
+        }).join('');
+        return `<div class="col-lg-6"><section class="double-trio-leg"><div class="d-flex justify-content-between align-items-center gap-2 mb-2"><div class="double-trio-leg-title">第 ${escapeHtml(leg.leg_no)} 關 · 第 ${escapeHtml(leg.race_no)} 場</div>${snapshotMeta}</div>${selectionHtml}</section></div>`;
       }).join('');
       eventCard.innerHTML = `
         <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
           <div><span class="badge text-bg-light border me-2">${escapeHtml(event.display_label || '官方孖T')}</span><span class="small text-secondary">${escapeHtml(event.pool_event_code || '')}</span></div>
-          <span class="small text-secondary">每關 4 匹 → C(4,3) = 4 組</span>
+          <div class="d-flex flex-wrap align-items-center justify-content-end gap-2"><span class="small text-secondary">每關 4 匹 → C(4,3) = 4 組</span>${alertSummary}</div>
         </div>
         <div class="row g-3">${legHtml}</div>
         <div class="double-trio-capital mt-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
@@ -235,7 +270,7 @@
     });
     const disclaimer = document.createElement('p');
     disclaimer.className = 'double-trio-disclaimer mb-0';
-    disclaimer.textContent = '本區只作賽前模型研究呈現，不會提交、傳送或執行投注；賽馬投注涉及風險，請自行設定可承受損失。';
+    disclaimer.textContent = '賠率監控只呈現既有官方 T-15／T-5 快照的公開變動，並不代表資金來源、內幕資訊、勝出保證或投注指令。本區不會提交、傳送或執行投注。';
     elements.doubleTrioContent.append(disclaimer);
     elements.doubleTrioSection.classList.remove('d-none');
   }

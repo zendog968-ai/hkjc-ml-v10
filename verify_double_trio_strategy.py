@@ -23,6 +23,10 @@ def prediction(race_no: int, base_number: int, available: bool = True) -> dict:
                 "joint_neural_probability": probability,
                 "n6_neural_score": probability * 100,
                 "n6_rank": offset + 1,
+                "market_odds": 8.0 if offset == 0 else (6.0 if offset == 1 else 7.0),
+                "odds_t_minus_15": 10.0 if offset == 0 else (5.0 if offset == 1 else 7.0),
+                "odds_t_minus_5": 8.0 if offset == 0 else (6.0 if offset == 1 else 7.0),
+                "odds_drop_ratio": -0.2 if offset == 0 else (0.2 if offset == 1 else 0.0),
             }
         )
     return {"race": {"race_no": race_no}, "predictions": rows, "n6_integration": {"status": "available" if available else "unavailable"}}
@@ -80,6 +84,10 @@ def main() -> int:
     assert len(plan["cross_combinations"]) == 16
     assert plan["unit_stake_hkd"] == 10.0
     assert plan["total_suggested_capital_hkd"] == 160.0
+    assert event["odds_monitoring_summary"]["status"] == "available"
+    assert event["odds_monitoring_summary"]["large_movement_count"] == 4
+    assert event["legs"][0]["odds_monitoring"]["selections"][0]["movement_status"] == "large_shortening"
+    assert event["legs"][1]["odds_monitoring"]["selections"][1]["movement_status"] == "large_drift"
 
     # The N6 layer already assigns unique deterministic joint ranks for score ties.
     # The strategy layer must preserve these ranks for both legs despite a shuffled
@@ -106,7 +114,7 @@ def main() -> int:
 
     unconfirmed = build_meeting_strategies(official_payload("pending"), {3: prediction(3, 1), 7: prediction(7, 11)})
     assert unconfirmed["status"] == "official_data_unavailable", unconfirmed
-    print(json.dumps({"status": "PASS", "strategy": "four-horse Double Trio", "combinations": 16, "capital_hkd": 160, "tie_order_stable": "PASS", "duplicate_rank_fail_closed": "PASS"}, ensure_ascii=False))
+    print(json.dumps({"status": "PASS", "strategy": "four-horse Double Trio", "combinations": 16, "capital_hkd": 160, "odds_monitoring": "PASS", "tie_order_stable": "PASS", "duplicate_rank_fail_closed": "PASS"}, ensure_ascii=False))
     return 0
 
 
