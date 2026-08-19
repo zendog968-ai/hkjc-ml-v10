@@ -14,6 +14,8 @@
     doubleTrioContent: document.getElementById('doubleTrioContent'),
     overseasDeepSection: document.getElementById('overseasDeepSection'),
     overseasDeepContent: document.getElementById('overseasDeepContent'),
+    overseasRaceSelector: document.getElementById('overseasRaceSelector'),
+    loadOverseasDeepButton: document.getElementById('loadOverseasDeepButton'),
     reportSection: document.getElementById('reportSection'),
     reportContent: document.getElementById('reportContent'),
     emptyState: document.getElementById('emptyState'),
@@ -123,6 +125,7 @@
       available_public: '公開可用',
       unavailable_paid_or_restricted: '訂閱／受限',
       unavailable_parse: '暫未取得',
+      not_requested: '未請求',
     };
     return labels[value] || '未提供';
   }
@@ -156,9 +159,10 @@
     elements.overseasDeepSection.classList.remove('d-none');
   }
 
-  async function loadOverseasDeep(requestedDate) {
+  async function loadOverseasDeep(requestedDate, requestedRaceNo = Number(elements.overseasRaceSelector?.value || 1)) {
+    const raceNo = Number.isInteger(requestedRaceNo) && requestedRaceNo >= 1 && requestedRaceNo <= 20 ? requestedRaceNo : 1;
     try {
-      const payload = await request(`/api/overseas-deep/${encodeURIComponent(requestedDate)}/S1/1`);
+      const payload = await request(`/api/overseas-deep/${encodeURIComponent(requestedDate)}/S1/${encodeURIComponent(raceNo)}`);
       if (elements.raceDate.value === requestedDate) renderOverseasDeep(payload);
     } catch (error) {
       elements.overseasDeepContent.innerHTML = `<div class="overseas-deep-awaiting rounded-3"><strong>S1海外深度資料暫不可讀取</strong><br><span>${escapeHtml(error.message)}</span></div>`;
@@ -430,6 +434,19 @@
 
   elements.raceDate.value = hongKongToday();
   elements.loadRacesButton.addEventListener('click', loadRaces);
+  elements.loadOverseasDeepButton.addEventListener('click', async () => {
+    const requestedDate = elements.raceDate.value;
+    if (!requestedDate) {
+      showNotification('請先選擇有效賽日。', true);
+      return;
+    }
+    setLoading(elements.loadOverseasDeepButton, true);
+    try {
+      await loadOverseasDeep(requestedDate, Number(elements.overseasRaceSelector.value));
+    } finally {
+      setLoading(elements.loadOverseasDeepButton, false);
+    }
+  });
   checkHealth();
   void loadOverseasDeep(elements.raceDate.value);
 })();

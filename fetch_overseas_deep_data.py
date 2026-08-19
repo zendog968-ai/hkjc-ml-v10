@@ -77,7 +77,7 @@ def parse_racing_post(html: str) -> tuple[dict[str, Any], dict[str, dict[str, An
 
     starters: dict[str, dict[str, Any]] = {}
     soup = BeautifulSoup(html, "html.parser")
-    rating_pattern = re.compile(r"OR\s*:?\s*(\d+)\s+TS\s*:?\s*(-|\d+)\s+RPR\s*:?\s*(\d+)", re.I)
+    rating_pattern = re.compile(r"OR\s*:?\s*(-|\d+)\s+TS\s*:?\s*(-|\d+)\s+RPR\s*:?\s*(\d+)", re.I)
     # Horse identity is extracted from the public horse-profile link below; this
     # expression only binds the displayed runner number and draw, avoiding any
     # dependency on varying UK equipment, colour or age wording.
@@ -98,7 +98,7 @@ def parse_racing_post(html: str) -> tuple[dict[str, Any], dict[str, dict[str, An
                     pace_text = snippet.lower()
                     starters[key] = {
                         "runner_no": int(runner_match.group(1)), "draw_no": int(runner_match.group(2)), "horse_name": horse,
-                        "official_rating": int(rating_match.group(1)), "top_speed_rating": None if rating_match.group(2) == "-" else int(rating_match.group(2)),
+                        "official_rating": None if rating_match.group(1) == "-" else int(rating_match.group(1)), "top_speed_rating": None if rating_match.group(2) == "-" else int(rating_match.group(2)),
                         "racing_post_rating": int(rating_match.group(3)),
                         "pace_hint": "front_runner_hint" if "enjoys making it" in pace_text else ("held_up_hint" if "too much to do" in pace_text else None),
                         "source_rpr_ts_url": None,
@@ -240,7 +240,7 @@ def persist(db_path: Path, schema_path: Path, payload: dict[str, Any]) -> None:
             ("at_the_races_form", "available_public" if row.get("distance_runs") is not None or row.get("similar_going_runs") is not None else "unavailable_parse", row.get("source_form_url")),
             ("timeform_pace_setup", "unavailable_paid_or_restricted", run.get("timeform_url")),
             ("timeform_tfr", "unavailable_paid_or_restricted", run.get("timeform_url")),
-            ("hkjc_win_odds", "available_public" if row.get("hkjc_win_odds") is not None else "unavailable_parse", row.get("source_hkjc_odds_url") or run.get("hkjc_odds_source")),
+            ("hkjc_win_odds", "available_public" if row.get("hkjc_win_odds") is not None else ("not_requested" if "not requested" in str(run.get("source_notes", "")).lower() else "unavailable_parse"), row.get("source_hkjc_odds_url") or run.get("hkjc_odds_source")),
         )
         for field_name, availability, source_url in field_statuses:
             conn.execute("INSERT INTO s1_source_field_status(s1_starter_id,field_name,availability,source_url,captured_at_utc) VALUES(?,?,?,?,?)", (starter_id, field_name, availability, source_url, run["fetched_at_utc"]))
@@ -257,6 +257,11 @@ def main() -> int:
     parser.add_argument("--at-the-races-url", default=DEFAULT_ATR)
     parser.add_argument("--timeform-url", default=DEFAULT_TIMEFORM)
     parser.add_argument("--hkjc-odds-url", default=DEFAULT_HKJC_ODDS)
+    parser.add_argument("--racing-post-html", help="已保存的公開 Racing Post HTML；只供批次快取重用。")
+    parser.add_argument("--at-the-races-html", help="已保存的公開 At The Races HTML；只供批次快取重用。")
+    parser.add_argument("--skip-hkjc-odds", action="store_true", help="只抓英國公開深度資料，不嘗試 HKJC 賠率頁。")
+    parser.add_argument("--local-start-time", default="13:50 BST", help="已核實的當地開跑時間，僅作展示及溯源。")
+    parser.add_argument("--hkt-start-time", default="20:50 HKT", help="已核實的香港開跑時間，僅作展示及溯源。")
     parser.add_argument("--db", default="overseas_deep_racing.sqlite")
     parser.add_argument("--schema", default="schema_overseas_deep_racing.sql")
     parser.add_argument("--raw-dir", default="archive/overseas_deep_raw")
@@ -265,11 +270,17 @@ def main() -> int:
     args = parser.parse_args()
     if not re.fullmatch(r"S\d+", args.simulcast_code.upper()) or args.race_no < 1:
         raise SystemExit("simulcast-code 必須為 S1/S2，race-no 必須為正整數")
-    rp_html, rp_error = fetch_public(args.racing_post_url, args.timeout)
-    atr_html, atr_error = fetch_public(args.at_the_races_url, args.timeout)
+    rp_html = Path(args.racing_post_html).read_text(encoding="utf-8") if args.racing_post_html else None
+    atr_html = Path(args.at_the_races_html).read_text(encoding="utf-8") if args.at_the_races_html else None
+    rp_error = None if rp_html is not None else None
+    atr_error = None if atr_html is not None else None
+    if rp_html is None:
+        rp_html, rp_error = fetch_public(args.racing_post_url, args.timeout)
+    if atr_html is None:
+        atr_html, atr_error = fetch_public(args.at_the_races_url, args.timeout)
     rp_race, rp_rows = parse_racing_post(rp_html) if rp_html else ({}, {})
     atr_rows = parse_atr(atr_html) if atr_html else {}
-    odds, odds_error = fetch_hkjc_odds(args.hkjc_odds_url, args.timeout)
+    odds, odds_error = ({}, "HKJC odds not requested for this public-deep-data batch; no non-official substitute is used.") if args.skip_hkjc_odds else fetch_hkjc_odds(args.hkjc_odds_url, args.timeout)
     rows: list[dict[str, Any]] = []
     for key, rp in rp_rows.items():
         atr = atr_rows.get(key, {})
@@ -279,7 +290,9 @@ def main() -> int:
         merged["data_completeness"] = "complete" if present >= 5 else ("partial" if present >= 2 else "degraded")
         rows.append(merged)
     score_rows(rows)
-    status = "complete" if len(rows) >= 10 and not rp_error else ("partial" if rows else "failed")
+    declared_runners = number(rp_race.get("declared_runners"))
+    roster_complete = declared_runners is not None and int(declared_runners) == len(rows)
+    status = "complete" if roster_complete and not rp_error else ("partial" if rows else "failed")
     fetched_at = utc_now()
     notes = []
     if rp_error: notes.append(f"Racing Post: {rp_error}")
@@ -289,9 +302,9 @@ def main() -> int:
     payload = {
         "schema_version": "v10_overseas_deep_scraper_v1",
         "scrape_run": {"meeting_date": args.date, "simulcast_code": args.simulcast_code.upper(), "race_no": args.race_no, "venue": args.venue, "status": status, "n6_status": "disabled_non_hk", "fetched_at_utc": fetched_at, "racing_post_url": args.racing_post_url, "at_the_races_url": args.at_the_races_url, "timeform_url": args.timeform_url, "hkjc_odds_source": args.hkjc_odds_url, "source_notes": " | ".join(notes)},
-        "race": {"meeting_date": args.date, "simulcast_code": args.simulcast_code.upper(), "race_no": args.race_no, "venue": args.venue, "local_start_time": "13:50 BST", "hkt_start_time": "20:50 HKT", "source_status": "complete" if rp_rows else "degraded", **rp_race},
+        "race": {"meeting_date": args.date, "simulcast_code": args.simulcast_code.upper(), "race_no": args.race_no, "venue": args.venue, "local_start_time": args.local_start_time, "hkt_start_time": args.hkt_start_time, "source_status": "complete" if rp_rows else "degraded", **rp_race},
         "n6_integration": {"status": "disabled_non_hk", "message": "S1/S2 uses overseas deep-data scoring only; HK-trained N6 Neural Score is not invoked."},
-        "field_availability": {"rpr": "available_public" if rp_rows else "unavailable_parse", "top_speed": "available_public" if rp_rows else "unavailable_parse", "pace_setup": "unavailable_paid_or_restricted", "timeform_tfr": "unavailable_paid_or_restricted", "hkjc_odds": "available_public" if odds else "unavailable_parse"},
+        "field_availability": {"rpr": "available_public" if rp_rows else "unavailable_parse", "top_speed": "available_public" if rp_rows else "unavailable_parse", "pace_setup": "unavailable_paid_or_restricted", "timeform_tfr": "unavailable_paid_or_restricted", "hkjc_odds": "not_requested" if args.skip_hkjc_odds else ("available_public" if odds else "unavailable_parse")},
         "scoring_method": "Public-field min-max composite: RPR 50%, TS 25%, smoothed distance win-rate 10%, smoothed similar-going win-rate 10%, smoothed course win-rate 5%. Missing fields are reweighted, never imputed; condition rates use a Beta(1,4) prior. This is an overseas research score, not V10 probability/EV/Kelly.",
         "starters": rows,
         "raw_artifacts": {"racing_post": save_raw(Path(args.raw_dir), "racing_post", rp_html), "at_the_races": save_raw(Path(args.raw_dir), "at_the_races", atr_html)},
