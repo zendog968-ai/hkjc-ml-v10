@@ -1,0 +1,12 @@
+# N6 Neural Calculation Engine — isolated runtime dependencies
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+numpy>=1.26,<3.0
+pandas>=2.2,<3.0
+scikit-learn>=1.5,<2.0
+torch>=2.4,<3.0
+matplotlib>=3.8,<4.0
+
+# Candidate-only hierarchical Bayesian calibration experiments
+pymc>=5.20,<6
+arviz>=0.18

@@ -86,3 +86,23 @@ v102_*_test.json
 v102_*_test.csv
 v102_place_validation.json
 v102_scheduler_test/
+
+# Versioned N6 engine source and deployment templates. Generated model/data/report
+# artifacts remain excluded by the default-deny rules above.
+!n6_engine/
+!n6_engine/**/
+!n6_engine/**/*.py
+!n6_engine/**/requirements.txt
+!n6_engine/deploy/*.service
+!n6_engine/reports/memory_profile/N6_MEMORY_PROFILING_REPORT_2026-08-19.md
+# N6 generated artifacts remain ignored even after the source-directory whitelist.
+n6_engine/**/*.sqlite
+n6_engine/**/*.sqlite3
+n6_engine/**/*.db
+n6_engine/**/*.pkl
+n6_engine/**/*.pt
+n6_engine/**/*.joblib
+n6_engine/**/*.json
+n6_engine/**/*.csv
+n6_engine/**/*.log
+n6_engine/**/*.txt

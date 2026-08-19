@@ -1,0 +1,42 @@
+[Unit]
+Description=N6 benchmark candidate (two Uvicorn workers, loopback only)
+Documentation=file:///home/ubuntu/n6_engine/README.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/home/ubuntu/n6_engine/models/n6_mlp_model.pt
+ConditionPathExists=/home/ubuntu/n6_engine/models/n6_preprocessor.joblib
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/n6_engine
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStart=/home/ubuntu/n6_engine/.venv/bin/python -m uvicorn n6.api:app --host 127.0.0.1 --port 5002 --workers 2 --no-access-log
+Restart=no
+TimeoutStartSec=45
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=

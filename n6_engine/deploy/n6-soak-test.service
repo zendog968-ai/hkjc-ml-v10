@@ -1,0 +1,25 @@
+[Unit]
+Description=N6 three-hour read-only historical inference soak test
+After=n6-engine.service
+Requires=n6-engine.service
+ConditionPathExists=/home/ubuntu/n6_engine/soak_test_n6_historical.py
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/n6_engine
+Environment=PYTHONUNBUFFERED=1
+Nice=10
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/ubuntu/n6_engine/reports/soak
+ExecStart=/home/ubuntu/n6_engine/.venv/bin/python /home/ubuntu/n6_engine/soak_test_n6_historical.py --duration-seconds 10800 --concurrency 2 --cycle-seconds 2 --telemetry-seconds 60 --output-dir /home/ubuntu/n6_engine/reports/soak
+Restart=no
+TimeoutStartSec=4h
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
