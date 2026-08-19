@@ -36,6 +36,9 @@ DOUBLE_TRIO_BACKTEST_SUMMARY_PATH = Path(
 OVERSEAS_DEEP_RUNTIME_ROOT = Path(
     os.getenv("HKJC_OVERSEAS_DEEP_RUNTIME_ROOT", str(PROJECT_ROOT / "runtime" / "overseas_deep"))
 ).expanduser().resolve()
+OVERSEAS_DEEP_BACKTEST_SUMMARY_PATH = Path(
+    os.getenv("HKJC_OVERSEAS_DEEP_BACKTEST_SUMMARY", str(PROJECT_ROOT / "reports" / "overseas_deep" / "OVERSEAS_DEEP_PROXY_BACKTEST.json"))
+).expanduser().resolve()
 JOB_DIRECTORY_RE = re.compile(r"^(?P<day>\d{2})_(?P<course>ST|HV)_R(?P<race_no>\d{1,2})$")
 LEGACY_JOB_DIRECTORY_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<course>ST|HV)_R(?P<race_no>\d{1,2})$")
 
@@ -136,6 +139,27 @@ def read_json_project_report(path: Path) -> dict[str, Any]:
             "notice": "歷史孖T回測摘要暫不可讀取；不會顯示未驗證數值。",
         }
     return payload if isinstance(payload, dict) else {"readiness": "not_ready", "cohorts": {}, "settled_record_count": 0, "notice": "回測摘要格式無效；不會顯示未驗證數值。"}
+
+
+def read_overseas_deep_backtest_summary() -> dict[str, Any]:
+    """Read only the fixed overseas deep-proxy backtest summary."""
+    path = OVERSEAS_DEEP_BACKTEST_SUMMARY_PATH
+    fallback = {
+        "status": "not_available",
+        "strict_event_count": 0,
+        "cohorts": [],
+        "minimum_exploratory_events": 15,
+        "warning": "尚未有可稽核的海外賽前深度決策與官方賽果配對；不以賽後重抓資料代替回測。",
+    }
+    if not path.is_file():
+        return fallback
+    try:
+        if path.stat().st_size > MAX_JSON_BYTES:
+            return fallback
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return fallback
+    return payload if isinstance(payload, dict) else fallback
 
 
 def read_json_artifact(path: Path) -> dict[str, Any]:
@@ -357,6 +381,12 @@ async def double_trio_for_date(
 async def double_trio_backtest_summary() -> dict[str, Any]:
     """Return only the allow-listed, cohort-isolated historical backtest summary."""
     return read_json_project_report(DOUBLE_TRIO_BACKTEST_SUMMARY_PATH)
+
+
+@app.get("/api/overseas-deep/backtest", tags=["overseas-deep"])
+async def overseas_deep_backtest_summary() -> dict[str, Any]:
+    """Return the fixed strict overseas research-proxy evaluation summary."""
+    return read_overseas_deep_backtest_summary()
 
 
 @app.get("/api/overseas-deep/{date}/{simulcast_code}/{race_no}", tags=["overseas-deep"])

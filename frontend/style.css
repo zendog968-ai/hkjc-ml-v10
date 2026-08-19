@@ -473,3 +473,22 @@ body {
   color: #166534;
   font-weight: 700;
 }
+
+/* Strict overseas deep-proxy backtest; not part of V10.2 model evaluation. */
+.overseas-backtest {
+  border: 1px solid #dbe5f0;
+  border-left: 4px solid #4876a8;
+  border-radius: .75rem;
+  padding: 1rem;
+  background: #fbfdff;
+}
+
+.overseas-backtest code {
+  color: #2f5b87;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.overseas-backtest .table {
+  font-size: .86rem;
+}
