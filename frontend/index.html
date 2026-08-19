@@ -12,9 +12,12 @@
   <header class="navbar navbar-expand-lg navbar-dark app-navbar shadow-sm">
     <div class="container">
       <a class="navbar-brand fw-semibold" href="/">HKJC ML <span>V10</span></a>
-      <div class="d-flex align-items-center gap-2 text-white-50 small">
+      <div class="d-flex flex-wrap align-items-center justify-content-end gap-2 text-white-50 small">
         <span id="apiStatus" class="status-dot" aria-hidden="true"></span>
         <span id="apiStatusText">正在確認唯讀 API 狀態</span>
+        <span class="opacity-50">|</span>
+        <span id="n6Status" class="status-dot" aria-hidden="true"></span>
+        <span id="n6StatusText">N6 訊號待載入</span>
       </div>
     </div>
   </header>
@@ -25,7 +28,7 @@
         <div class="col-lg-7">
           <p class="eyebrow mb-2">READ-ONLY RACING INTELLIGENCE</p>
           <h1 class="display-6 fw-bold mb-3">賽事預測控制台</h1>
-          <p class="mb-0 text-secondary">查閱已生成的 V10.2 預測、雙策略篩選與賽前 Markdown 報告。此網頁只讀取既有產出，不會重算勝率、改動 EV／Kelly 或觸發任何投注。</p>
+          <p class="mb-0 text-secondary">查閱已生成的 V10.2 預測、N6 輔助神經訊號、雙策略篩選與賽前 Markdown 報告。此網頁只讀取既有產出；N6 不會改寫 V10 勝率、EV／Kelly，亦不會觸發任何投注。</p>
         </div>
         <div class="col-lg-5">
           <div class="control-card p-3 p-md-4">
@@ -65,6 +68,7 @@
             <p class="section-kicker mb-1">PREDICTION SNAPSHOT</p>
             <h2 id="predictionHeading" class="h4 mb-0">場內預測</h2>
             <p id="predictionMeta" class="text-secondary small mb-0 mt-1"></p>
+            <p id="n6ModelSummary" class="text-secondary small mb-0 mt-1"></p>
           </div>
           <div id="filterSummary" class="text-end small"></div>
         </div>
@@ -78,13 +82,30 @@
                 <th scope="col" class="text-end">Place 機率</th>
                 <th scope="col" class="text-end">EV</th>
                 <th scope="col" class="text-end">Kelly 注碼比例</th>
+                <th scope="col" class="text-end">Neural Score</th>
+                <th scope="col" class="text-end">N6 排名</th>
+                <th scope="col">綜合聯合推薦</th>
                 <th scope="col">模型提示</th>
               </tr>
             </thead>
             <tbody id="predictionTableBody"></tbody>
           </table>
         </div>
-        <div class="p-3 px-4 border-top table-note">綠色列只代表模型輸出的 EV 大於零，並不代表保證回報。Kelly 為 V10.2 已保存的注碼比例欄位，未經本網頁重新計算。</div>
+        <div class="p-3 px-4 border-top table-note">綠色列只代表模型輸出的 EV 大於零，並不代表保證回報。Neural Score 為 N6 場內正規化機率 × 100；目前 N6 使用 72 維「市場隱含機率」特徵契約。 「綜合聯合推薦」只代表 V10 與 N6 同列前 3 名的研究性一致訊號。EV／Kelly 均為 V10 已保存欄位，未經本網頁重新計算。</div>
+      </div>
+    </section>
+
+    <section id="doubleTrioSection" class="card dashboard-card mb-4 d-none" aria-labelledby="doubleTrioHeading">
+      <div class="card-body p-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 border-bottom pb-3 mb-4">
+          <div>
+            <p class="section-kicker mb-1">DOUBLE TRIO STRATEGY</p>
+            <h2 id="doubleTrioHeading" class="h4 mb-1">孖T實戰策略區</h2>
+            <p class="text-secondary small mb-0">只接受香港賽馬會公開頁明示的首關及次關；每關嚴格按最新 V10＋N6 綜合聯合排名取四匹，並以四匹複式展示 16 注組合。</p>
+          </div>
+          <span class="badge double-trio-badge">精選四匹複式</span>
+        </div>
+        <div id="doubleTrioContent" aria-live="polite"></div>
       </div>
     </section>
 

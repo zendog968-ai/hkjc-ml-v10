@@ -42,11 +42,47 @@ def main() -> int:
         write_json(job_dir / "prediction.json", prediction)
         write_json(job_dir / "high_probability_filter.json", filtered)
         (job_dir / "pre_race_report.md").write_text("# 測試賽前報告\n\nV10.2 正式機率保持不變。\n", encoding="utf-8")
+        for race_no, start_no in ((3, 1), (7, 11)):
+            rows = [
+                {
+                    "horse_no": start_no + offset,
+                    "horse_name": f"孖T測試馬{race_no}-{start_no + offset}",
+                    "rank": offset + 1,
+                    "predicted_win_probability": 0.30 - offset * 0.03,
+                    "ev_per_unit": 0.03 * (4 - offset),
+                }
+                for offset in range(5)
+            ]
+            dt_dir = fixture_root / "2026" / "08" / f"18_ST_R{race_no:02d}"
+            write_json(dt_dir / "prediction.json", {"model": "HKJC V10.2 fixture", "race": {"race_date": "2026-08-18", "racecourse": "ST", "race_no": race_no}, "predictions": rows})
+        write_json(
+            fixture_root / "2026" / "08" / "18_ST_double_trio_official.json",
+            {
+                "schema_version": "v10_hkjc_double_trio_official_v1",
+                "status": "official_confirmed",
+                "meeting": {"race_date": "2026-08-18", "racecourse": "ST"},
+                "source": {"url": "https://example.invalid/hkjc-official-double-trio", "mode": "offline_fixture"},
+                "events": [{"pool_event_code": "DT-FIXTURE-R3-R7", "display_label": "第1口孖T", "legs": [{"leg_no": 1, "race_no": 3}, {"leg_no": 2, "race_no": 7}]}],
+            },
+        )
         before = digest_tree(fixture_root)
 
         os.environ["HKJC_RUNTIME_ROOT"] = str(fixture_root)
         sys.modules.pop("web_api", None)
         web_api = importlib.import_module("web_api")
+
+        def fake_n6_enrichment(source: dict, *_: object) -> dict:
+            enriched = json.loads(json.dumps(source, ensure_ascii=False))
+            for position, row in enumerate(enriched.get("predictions", []), start=1):
+                row["n6_neural_score"] = float(row.get("predicted_win_probability", 0.0)) * 100.0
+                row["n6_rank"] = position
+                row["joint_neural_probability"] = float(row.get("predicted_win_probability", 0.0))
+                row["joint_neural_score"] = float(row.get("predicted_win_probability", 0.0)) * 100.0
+                row["joint_rank"] = position
+            enriched["n6_integration"] = {"status": "available", "method": "fixture"}
+            return enriched
+
+        web_api.enrich_prediction = fake_n6_enrichment
         with TestClient(web_api.app) as client:
             health = client.get("/health")
             assert health.status_code == 200, health.text
@@ -55,20 +91,39 @@ def main() -> int:
 
             listing = client.get("/api/races/2026-08-18")
             assert listing.status_code == 200, listing.text
-            assert listing.json()["count"] == 1
-            assert listing.json()["races"] == [{
+            assert listing.json()["count"] == 3
+            listed_races = listing.json()["races"]
+            assert [(item["course"], item["race_no"]) for item in listed_races] == [("ST", 1), ("ST", 3), ("ST", 7)]
+            assert listed_races[0] == {
                 "date": "2026-08-18", "course": "ST", "race_no": 1,
                 "artifact_directory": "2026/08/18_ST_R01",
                 "has_high_probability_filter": True,
                 "has_markdown_report": True,
                 "has_v103_uncertainty_sidecar": False,
-            }]
+            }
 
             prediction_response = client.get("/api/prediction/2026-08-18/st/1")
             assert prediction_response.status_code == 200, prediction_response.text
             body = prediction_response.json()
-            assert body["prediction"] == prediction
+            assert body["prediction"].get("n6_integration", {}).get("status") in {"available", "unavailable"}
+            response_prediction = dict(body["prediction"])
+            response_prediction.pop("n6_integration", None)
+            for row in response_prediction.get("predictions", []):
+                for key in ("n6_neural_win_probability", "n6_neural_score", "n6_rank", "joint_neural_probability", "joint_neural_score", "joint_rank", "joint_recommendation", "joint_consensus"):
+                    row.pop(key, None)
+            assert response_prediction == prediction
             assert body["high_probability_filter"] == filtered
+
+            double_trio = client.get("/api/double-trio/2026-08-18/ST")
+            assert double_trio.status_code == 200, double_trio.text
+            strategy = double_trio.json()
+            assert strategy["status"] == "ready", strategy
+            event = strategy["events"][0]
+            assert event["status"] == "ready", event
+            assert [item["horse_no"] for item in event["legs"][0]["selections"]] == [1, 2, 3, 4]
+            assert [item["horse_no"] for item in event["legs"][1]["selections"]] == [11, 12, 13, 14]
+            assert event["combination_plan"]["total_bet_combinations"] == 16
+            assert event["combination_plan"]["total_suggested_capital_hkd"] == 160.0
 
             report = client.get("/api/report/2026-08-18/ST/1")
             assert report.status_code == 200, report.text
@@ -93,7 +148,7 @@ def main() -> int:
         assert before == after, "唯讀 API 測試後 runtime 工件被修改"
         print(json.dumps({
             "status": "PASS",
-            "endpoints": ["/health", "/api/races/{date}", "/api/prediction/{date}/{course}/{race_no}", "/api/report/{date}/{course}/{race_no}"],
+            "endpoints": ["/health", "/api/races/{date}", "/api/prediction/{date}/{course}/{race_no}", "/api/double-trio/{date}/{course}", "/api/report/{date}/{course}/{race_no}"],
             "cors": "PASS",
             "read_only_artifacts": "PASS",
         }, ensure_ascii=False))
