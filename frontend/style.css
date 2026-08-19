@@ -428,3 +428,12 @@ body {
   .overseas-deep-status { gap: .4rem; }
   .overseas-deep-status span { width: 100%; }
 }
+
+.overseas-race-selector {
+  width: auto;
+  min-width: 5.25rem;
+}
+
+@media (max-width: 575.98px) {
+  .overseas-race-selector { flex: 1 1 5.25rem; }
+}

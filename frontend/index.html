@@ -103,7 +103,15 @@
             <h2 id="overseasDeepHeading" class="h4 mb-1">S1 海外賽事專區</h2>
             <p class="text-secondary small mb-0">只展示可公開驗證的英國本地特徵與來源狀態。RPR／TS、路程／場地與血統資料均與香港本地 V10資料庫隔離；S1／S2 一律停用 N6 Neural Score。</p>
           </div>
-          <span class="badge overseas-deep-badge">海外深度研究層</span>
+          <div class="d-flex flex-wrap align-items-center justify-content-end gap-2">
+            <label for="overseasRaceSelector" class="visually-hidden">S1 場次</label>
+            <select id="overseasRaceSelector" class="form-select form-select-sm overseas-race-selector" aria-label="選擇 S1 海外場次">
+              <option value="1">S1-1</option><option value="2">S1-2</option><option value="3">S1-3</option><option value="4">S1-4</option>
+              <option value="5">S1-5</option><option value="6">S1-6</option><option value="7">S1-7</option><option value="8">S1-8</option>
+            </select>
+            <button id="loadOverseasDeepButton" class="btn btn-outline-primary btn-sm" type="button"><span class="button-text">載入 S1</span><span class="spinner-border spinner-border-sm d-none" aria-hidden="true"></span></button>
+            <span class="badge overseas-deep-badge">海外深度研究層</span>
+          </div>
         </div>
         <div id="overseasDeepContent" aria-live="polite"></div>
       </div>
