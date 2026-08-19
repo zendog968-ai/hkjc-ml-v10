@@ -10,6 +10,8 @@ from itertools import combinations, product
 import math
 from typing import Any
 
+from double_trio_odds_monitor import build_leg_odds_monitor
+
 DEFAULT_UNIT_STAKE_HKD = 10.0
 OFFICIAL_EVENT_SCHEMA = "v10_hkjc_double_trio_official_v1"
 STRATEGY_SCHEMA = "v10_n6_double_trio_strategy_v1"
@@ -132,6 +134,8 @@ def build_event_strategy(
             "status": "joint_rank_unavailable",
             "message": "；".join(message for message in (error_one, error_two) if message),
         }
+    leg_one_monitor = build_leg_odds_monitor(predictions_by_race[first_leg["race_no"]], leg_one)
+    leg_two_monitor = build_leg_odds_monitor(predictions_by_race[second_leg["race_no"]], leg_two)
     leg_one_combinations = [list(combo) for combo in combinations([row["horse_no"] for row in leg_one], 3)]
     leg_two_combinations = [list(combo) for combo in combinations([row["horse_no"] for row in leg_two], 3)]
     cross_combinations = [
@@ -152,9 +156,16 @@ def build_event_strategy(
             "n6_required": True,
         },
         "legs": [
-            {"leg_no": 1, "race_no": first_leg["race_no"], "selections": leg_one, "three_horse_combinations": leg_one_combinations},
-            {"leg_no": 2, "race_no": second_leg["race_no"], "selections": leg_two, "three_horse_combinations": leg_two_combinations},
+            {"leg_no": 1, "race_no": first_leg["race_no"], "selections": leg_one, "three_horse_combinations": leg_one_combinations, "odds_monitoring": leg_one_monitor},
+            {"leg_no": 2, "race_no": second_leg["race_no"], "selections": leg_two, "three_horse_combinations": leg_two_combinations, "odds_monitoring": leg_two_monitor},
         ],
+        "odds_monitoring_summary": {
+            "status": "available" if leg_one_monitor["status"] == "available" or leg_two_monitor["status"] == "available" else "snapshot_unavailable",
+            "large_movement_count": leg_one_monitor["large_movement_count"] + leg_two_monitor["large_movement_count"],
+            "large_shortening_count": leg_one_monitor["large_shortening_count"] + leg_two_monitor["large_shortening_count"],
+            "large_drift_count": leg_one_monitor["large_drift_count"] + leg_two_monitor["large_drift_count"],
+            "notice": "策略區僅呈現既有 T-15／T-5 官方快照的公開賠率變動；不觸發新抓取、不改動模型，亦不構成投注指令。",
+        },
         "combination_plan": {
             "label": "精選四匹複式",
             "per_leg_selection_count": 4,

@@ -50,6 +50,10 @@ def main() -> int:
                     "rank": offset + 1,
                     "predicted_win_probability": 0.30 - offset * 0.03,
                     "ev_per_unit": 0.03 * (4 - offset),
+                    "market_odds": 8.0 if offset == 0 else (6.0 if offset == 1 else 7.0),
+                    "odds_t_minus_15": 10.0 if offset == 0 else (5.0 if offset == 1 else 7.0),
+                    "odds_t_minus_5": 8.0 if offset == 0 else (6.0 if offset == 1 else 7.0),
+                    "odds_drop_ratio": -0.2 if offset == 0 else (0.2 if offset == 1 else 0.0),
                 }
                 for offset in range(5)
             ]
@@ -124,6 +128,9 @@ def main() -> int:
             assert [item["horse_no"] for item in event["legs"][1]["selections"]] == [11, 12, 13, 14]
             assert event["combination_plan"]["total_bet_combinations"] == 16
             assert event["combination_plan"]["total_suggested_capital_hkd"] == 160.0
+            assert event["odds_monitoring_summary"]["status"] == "available"
+            assert event["odds_monitoring_summary"]["large_movement_count"] == 4
+            assert event["legs"][0]["odds_monitoring"]["selections"][0]["movement_status"] == "large_shortening"
 
             report = client.get("/api/report/2026-08-18/ST/1")
             assert report.status_code == 200, report.text
