@@ -21,6 +21,10 @@ N6_BASE_URL = os.getenv("N6_API_BASE_URL", "http://127.0.0.1:5001").rstrip("/")
 N6_TIMEOUT_SECONDS = float(os.getenv("N6_API_TIMEOUT_SECONDS", "2.5"))
 V10_WEIGHT = 0.5
 N6_WEIGHT = 0.5
+# Scores within this display/ranking precision are treated as a numerical tie.
+# It suppresses inconsequential floating-point differences from normalization while
+# preserving materially distinct race-normalized probabilities.
+JOINT_RANK_TIE_DECIMALS = 12
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +38,39 @@ def _number(value: Any) -> float | None:
 
 def _horse_key(value: Any) -> str:
     return "".join(str(value or "").split())
+
+
+def _runner_number(value: Any) -> int | None:
+    number = _number(value)
+    if number is None or number <= 0 or int(number) != number:
+        return None
+    return int(number)
+
+
+def _joint_rank_key(row: dict[str, Any]) -> tuple[float, int, int, str]:
+    """Return an input-order-independent ordering key for an N6+V10 joint score.
+
+    The first key is a precision-bucketed joint probability. Exact and numerical
+    near ties therefore resolve by the official runner number, then the normalized
+    horse name only as a defensive fallback. Missing or invalid runner numbers sort
+    after valid official numbers, so a malformed artifact cannot displace one.
+    """
+    probability = _number(row.get("joint_neural_probability"))
+    if probability is None:
+        raise ValueError("joint_neural_probability 無效")
+    runner_no = _runner_number(row.get("horse_no", row.get("runner_no")))
+    return (
+        -round(probability, JOINT_RANK_TIE_DECIMALS),
+        0 if runner_no is not None else 1,
+        runner_no if runner_no is not None else 2**31 - 1,
+        _horse_key(row.get("horse_name")),
+    )
+
+
+def _has_invalid_or_duplicate_runner_numbers(rows: list[dict[str, Any]]) -> bool:
+    runner_numbers = [_runner_number(row.get("horse_no", row.get("runner_no"))) for row in rows]
+    valid = [number for number in runner_numbers if number is not None]
+    return len(valid) != len(runner_numbers) or len(valid) != len(set(valid))
 
 
 def _post_json(path: str, payload: dict[str, Any] | None = None) -> tuple[int, dict[str, Any] | None]:
@@ -127,6 +164,9 @@ def enrich_prediction(prediction: dict[str, Any], date: str, course: str, race_n
     if not isinstance(rows, list) or not rows:
         result["n6_integration"] = _unavailable_enrichment("V10 預測工件沒有可對接的馬匹列。")
         return result
+    if any(not isinstance(row, dict) for row in rows) or _has_invalid_or_duplicate_runner_numbers(rows):
+        result["n6_integration"] = _unavailable_enrichment("V10 工件含重複或無效馬號；為確保孖T聯合排名可重現，未顯示聯合推薦。")
+        return result
     mode, scores, status, model_descriptor = fetch_n6_scores(result, date, course, race_no)
     if scores is None:
         result["n6_integration"] = _unavailable_enrichment(status)
@@ -161,8 +201,8 @@ def enrich_prediction(prediction: dict[str, Any], date: str, course: str, race_n
     if any(value is None or value < 0.0 for value in v10_values + n6_values):
         result["n6_integration"] = _unavailable_enrichment("V10 或 N6 機率格式無效；未顯示聯合推薦。")
         return result
-    v10_total = sum(float(value) for value in v10_values if value is not None)
-    n6_total = sum(float(value) for value in n6_values if value is not None)
+    v10_total = math.fsum(float(value) for value in v10_values if value is not None)
+    n6_total = math.fsum(float(value) for value in n6_values if value is not None)
     if v10_total <= 0.0 or n6_total <= 0.0:
         result["n6_integration"] = _unavailable_enrichment("V10 或 N6 的場內機率總和無效；未顯示聯合推薦。")
         return result
@@ -171,9 +211,18 @@ def enrich_prediction(prediction: dict[str, Any], date: str, course: str, race_n
         joint_probability = V10_WEIGHT * (float(v10_value) / v10_total) + N6_WEIGHT * (float(n6_value) / n6_total)
         row["joint_neural_probability"] = joint_probability
         row["joint_neural_score"] = 100.0 * joint_probability
-    ordered = sorted(matched, key=lambda row: (-float(row["joint_neural_probability"]), _horse_key(row.get("horse_name"))))
+    ordered = sorted(matched, key=_joint_rank_key)
+    bucket_counts: dict[float, int] = {}
+    for row in ordered:
+        bucket = _joint_rank_key(row)[0]
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
     for rank, row in enumerate(ordered, start=1):
         row["joint_rank"] = rank
+        row["joint_rank_tie_break"] = (
+            "joint_probability_bucket_then_horse_no"
+            if bucket_counts[_joint_rank_key(row)[0]] > 1
+            else "joint_probability"
+        )
         v10_rank = _number(row.get("rank"))
         n6_rank = _number(row.get("n6_rank"))
         is_consensus = bool(v10_rank is not None and n6_rank is not None and v10_rank <= 3 and n6_rank <= 3)
@@ -196,7 +245,7 @@ def enrich_prediction(prediction: dict[str, Any], date: str, course: str, race_n
         "mode": mode,
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "weights": {"v10_probability": V10_WEIGHT, "n6_probability": N6_WEIGHT},
-        "method": "兩個場內正規化勝率以等權重合成；N6 只作輔助訊號，未改寫 V10 勝率、EV、Kelly 或既有風險提示。",
+        "method": "兩個場內正規化勝率以等權重合成；聯合排名按 12 位小數機率桶排序，數值同分再按官方馬號遞增，確保輸入列順序不影響排名。N6 只作輔助訊號，未改寫 V10 勝率、EV、Kelly 或既有風險提示。",
         "model": model_descriptor,
         "combined_recommendation": {
             "label": "綜合聯合推薦",
