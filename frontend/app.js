@@ -140,7 +140,16 @@
     return labels[value] || '未提供';
   }
 
-  function renderOverseasDeep(payload) {
+  function renderOverseasDeepBacktest(summary) {
+    const status = summary?.status;
+    if (status !== 'ready' || !Array.isArray(summary?.cohorts) || !summary.cohorts.length) {
+      return `<section class="overseas-backtest mt-3"><div class="d-flex flex-wrap justify-content-between gap-2 align-items-center"><div><strong>海外深度研究代理歷史回測</strong><br><small class="text-secondary">預測準確度：N/A</small></div><span class="badge backtest-na">資料不足</span></div><p class="small text-secondary mb-0 mt-2">${escapeHtml(summary?.warning || '尚未有不可變賽前深度決策與官方賽果配對；系統不以賽後重抓的RPR／TS資料回測。')}</p></section>`;
+    }
+    const rows = summary.cohorts.map((cohort) => `<tr><td><code>${escapeHtml(cohort.proxy_version || '—')}</code></td><td>${escapeHtml(cohort.events)}</td><td>${backtestPercent(cohort.top1_win_rate)}</td><td>${backtestPercent(cohort.top3_contains_winner_rate)}</td><td>${decimal(cohort.multi_class_brier, 4)}</td><td>${decimal(cohort.log_loss, 4)}</td><td><span class="badge ${cohort.sample_status === 'exploratory' ? 'backtest-exploratory' : 'backtest-ready'}">${escapeHtml(cohort.sample_status === 'exploratory' ? '探索性' : '資料充足')}</span></td></tr>`).join('');
+    return `<section class="overseas-backtest mt-3"><div class="d-flex flex-wrap justify-content-between gap-2 align-items-center"><div><strong>海外深度研究代理歷史回測</strong><br><small class="text-secondary">只按不可變賽前決策、來源雜湊與官方賽果配對；不跨代理版本混合。</small></div><span class="badge backtest-ready">合格事件 ${escapeHtml(summary.strict_event_count)}</span></div><div class="table-responsive mt-2"><table class="table table-sm mb-1"><thead><tr><th>代理版本</th><th>事件</th><th>Top-1</th><th>Top-3</th><th>Brier</th><th>Log loss</th><th>樣本</th></tr></thead><tbody>${rows}</tbody></table></div><p class="small text-secondary mb-0">${escapeHtml(summary.warning || '')}</p></section>`;
+  }
+
+  function renderOverseasDeep(payload, backtestSummary = null) {
     elements.overseasDeepContent.replaceChildren();
     const race = payload?.race && typeof payload.race === 'object' ? payload.race : {};
     const starters = Array.isArray(payload?.starters) ? payload.starters.slice() : [];
@@ -152,7 +161,7 @@
       const detail = payload?.n6_integration?.status !== 'disabled_non_hk'
         ? '海外資料的 N6 隔離狀態無效；系統已安全停止呈現。'
         : (payload?.scrape_run?.source_notes || '等待可驗證的公開海外賽事資料工件。');
-      elements.overseasDeepContent.innerHTML = `<div class="overseas-deep-awaiting rounded-3"><strong>S1海外深度資料暫未就緒</strong><br><span>${escapeHtml(detail)}</span></div>`;
+      elements.overseasDeepContent.innerHTML = `<div class="overseas-deep-awaiting rounded-3"><strong>S1海外深度資料暫未就緒</strong><br><span>${escapeHtml(detail)}</span></div>${renderOverseasDeepBacktest(backtestSummary)}`;
       elements.overseasDeepSection.classList.remove('d-none');
       return;
     }
@@ -171,15 +180,18 @@
       <div class="overseas-deep-status mb-3"><span>RPR：${escapeHtml(overseasAvailabilityLabel(availability.rpr))}</span><span>TS：${escapeHtml(overseasAvailabilityLabel(availability.top_speed))}</span><span>步速：${escapeHtml(overseasAvailabilityLabel(availability.pace_setup))}</span><span>HKJC 賠率：${marketReady ? '官方完整匹配' : '未能安全計算'}</span></div>
       ${marketReady ? `<div class="overseas-market-status mb-3"><strong>HKJC 官方 Win／Place 快照：</strong>${escapeHtml(market.captured_at_utc || '—')}；${escapeHtml(market.matched_runner_count || '—')}/${escapeHtml(market.expected_runner_count || '—')} 匹身份匹配；位置派彩 ${escapeHtml(market.place_dividends || '—')} 個。</div>` : '<div class="overseas-market-status overseas-market-blocked mb-3">HKJC 市場資料未完成嚴格身份／隔離檢查；Win、Place、EV 與 Kelly 保持空白。</div>'}
       <div class="table-responsive"><table class="table table-hover align-middle overseas-deep-table"><thead><tr><th>研究排名</th><th>馬號</th><th>馬匹</th><th class="text-end">RPR</th><th class="text-end">TS</th><th>路程勝／跑</th><th>相近 Going 勝／跑</th><th>血統（父／母／外祖父）</th><th class="text-end">公開綜合分</th><th class="text-end">HKJC Win</th><th class="text-end">Win EV</th><th class="text-end">HKJC Place</th><th class="text-end">Place EV</th><th class="text-end">Kelly</th></tr></thead><tbody>${rows}</tbody></table></div>
-      <p class="overseas-deep-disclaimer mb-0">${scrapeStatus === 'partial' ? '此場公開出馬或評分欄位未完整，僅展示已核實馬匹；未取得資料不作推斷。 ' : ''}${marketReady ? 'EV／Kelly 使用未校準海外公開深度分數所生成的研究性場內機率代理；正值只表示此代理相對當刻 HKJC 賠率的數學結果，不構成勝率、回報或投注保證。 ' : ''}公開綜合分只按當次可驗證的 RPR、TS 及公開 At The Races 路程、相近 Going、馬場平滑勝率正規化；缺失欄位重新加權而不填補。它不是 V10.2 機率、EV、Kelly 或 N6 Neural Score，亦不構成投注指令。${warnings.length ? ` 來源狀態：${escapeHtml(warnings.join('；'))}` : ''}</p>`;
+      <p class="overseas-deep-disclaimer mb-0">${scrapeStatus === 'partial' ? '此場公開出馬或評分欄位未完整，僅展示已核實馬匹；未取得資料不作推斷。 ' : ''}${marketReady ? 'EV／Kelly 使用未校準海外公開深度分數所生成的研究性場內機率代理；正值只表示此代理相對當刻 HKJC 賠率的數學結果，不構成勝率、回報或投注保證。 ' : ''}公開綜合分只按當次可驗證的 RPR、TS 及公開 At The Races 路程、相近 Going、馬場平滑勝率正規化；缺失欄位重新加權而不填補。它不是 V10.2 機率、EV、Kelly 或 N6 Neural Score，亦不構成投注指令。${warnings.length ? ` 來源狀態：${escapeHtml(warnings.join('；'))}` : ''}</p>${renderOverseasDeepBacktest(backtestSummary)}`;
     elements.overseasDeepSection.classList.remove('d-none');
   }
 
   async function loadOverseasDeep(requestedDate, requestedRaceNo = Number(elements.overseasRaceSelector?.value || 1)) {
     const raceNo = Number.isInteger(requestedRaceNo) && requestedRaceNo >= 1 && requestedRaceNo <= 20 ? requestedRaceNo : 1;
     try {
-      const payload = await request(`/api/overseas-deep/${encodeURIComponent(requestedDate)}/S1/${encodeURIComponent(raceNo)}`);
-      if (elements.raceDate.value === requestedDate) renderOverseasDeep(payload);
+      const [payload, backtestSummary] = await Promise.all([
+        request(`/api/overseas-deep/${encodeURIComponent(requestedDate)}/S1/${encodeURIComponent(raceNo)}`),
+        request('/api/overseas-deep/backtest').catch(() => ({ status: 'not_available', strict_event_count: 0, cohorts: [], warning: '海外深度回測摘要暫不可讀取；不會顯示未驗證數值。' })),
+      ]);
+      if (elements.raceDate.value === requestedDate) renderOverseasDeep(payload, backtestSummary);
     } catch (error) {
       elements.overseasDeepContent.innerHTML = `<div class="overseas-deep-awaiting rounded-3"><strong>S1海外深度資料暫不可讀取</strong><br><span>${escapeHtml(error.message)}</span></div>`;
       elements.overseasDeepSection.classList.remove('d-none');

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import math
 
-from enrich_overseas_deep_hkjc_market import enrich
+from enrich_overseas_deep_hkjc_market import enrich, parse_rendered_hkjc_text
 from fetch_hkjc_live_odds import parse_visible_odds_table
+from fetch_overseas_deep_data import norm
+
+TEXT = """No.\tColour\tHorse Name\tDraw\tWt.\tJockey\tTrainer\tWin\tPlace\tWin & Place
+1\n\tAlpha (IRE)\t1\t120\tJ\tT\n4.0\n1.8\n2\n\tBravo (GB)\t2\t120\tJ\tT\n8.0\n2.6\n3\n\tCharlie (IRE)\n(SCR)\nSCR\nSCR\nF\n\tField\n"""
 
 HTML = """
 <table><tr><th>No.</th><th>Horse Name</th><th>Win</th><th>Place</th></tr>
@@ -28,6 +32,9 @@ def payload() -> dict:
 
 def main() -> int:
     odds, metadata = parse_visible_odds_table(HTML)
+    text_odds, text_metadata = parse_rendered_hkjc_text(TEXT)
+    assert {norm(name): values for name, values in text_odds.items()} == {norm(name): values for name, values in odds.items()}, (text_odds, odds)
+    assert text_metadata["scratched_rows"] == 1, text_metadata
     assert set(odds) == {"Alpha(IRE)", "Bravo(GB)"}, odds
     assert metadata["rows_parsed"] == 2, metadata
     complete = enrich(payload(), odds, "https://bet.hkjc.com/en/racing/wp/2026-08-19/S1/1", "2026-08-19T09:00:00+00:00", 2, 5000, 7, 0.05, [])
@@ -40,7 +47,7 @@ def main() -> int:
     mismatched = enrich(payload(), {"Unknown": {"win": 3.0, "place": 1.5}}, "official", "2026-08-19T09:00:00+00:00", 2, 5000, 7, 0.05, [])
     assert mismatched["market_research"]["status"] == "identity_mismatch", mismatched
     assert all(row["market_research"]["win_ev"] is None for row in mismatched["starters"]), mismatched
-    print("PASS: HKJC English W/P parser, full identity match, probability conservation, EV/Kelly and mismatch stop")
+    print("PASS: HKJC English HTML/text W/P parser, SCR exclusion, full identity match, probability conservation, EV/Kelly and mismatch stop")
     return 0
 
 

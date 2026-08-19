@@ -91,6 +91,65 @@ def save_raw(raw_dir: Path, html: str) -> str:
     return str(path)
 
 
+def parse_rendered_hkjc_text(text: str) -> tuple[dict[str, dict[str, float | None]], dict[str, Any]]:
+    """Parse the browser's text extraction of a public HKJC Win/Place table.
+
+    This is an offline fallback only. It accepts the visible text saved by the
+    browser, excludes explicit SCR rows, and never fabricates an unavailable
+    odds value. The raw extraction must be retained as provenance.
+    """
+    lines = [line.strip() for line in text.splitlines()]
+    header = "No.\tColour\tHorse Name\tDraw\tWt.\tJockey\tTrainer\tWin\tPlace\tWin & Place"
+    try:
+        index = lines.index(header) + 1
+    except ValueError as exc:
+        raise ValueError("HKJC rendered text does not contain the Win/Place table header") from exc
+    rows: dict[str, dict[str, float | None]] = {}
+    scr = 0
+    while index < len(lines):
+        value = lines[index]
+        if value == "F":
+            break
+        if not value.isdigit():
+            index += 1
+            continue
+        index += 1
+        while index < len(lines) and not lines[index]:
+            index += 1
+        if index >= len(lines):
+            break
+        runner_fields = lines[index].split("\t")
+        horse_name = runner_fields[0].strip()
+        index += 1
+        while index < len(lines) and not lines[index]:
+            index += 1
+        if not horse_name or index >= len(lines):
+            continue
+        if lines[index] == "(SCR)":
+            scr += 1
+            index += 1
+            while index < len(lines) and lines[index] and not lines[index].isdigit() and lines[index] != "F":
+                index += 1
+            continue
+        win_text = lines[index]
+        index += 1
+        while index < len(lines) and not lines[index]:
+            index += 1
+        if index >= len(lines):
+            break
+        place_text = lines[index]
+        index += 1
+        try:
+            win = float(win_text)
+            place = float(place_text)
+        except ValueError:
+            continue
+        if win <= 0 or place <= 0:
+            continue
+        rows[horse_name] = {"win": win, "place": place}
+    return rows, {"rows_parsed": len(rows), "scratched_rows": scr, "source_type": "browser_rendered_text"}
+
+
 def persist_snapshot(db_path: Path, schema_path: Path, payload: dict[str, Any]) -> None:
     market = payload["market_research"]
     race = payload["race"]
@@ -188,6 +247,7 @@ def main() -> int:
     parser.add_argument("--schema", default="schema_overseas_deep_racing.sql")
     parser.add_argument("--raw-dir", default="archive/overseas_deep_raw")
     parser.add_argument("--html", help="離線官方 HKJC HTML；指定時不發出網絡請求。")
+    parser.add_argument("--text", help="離線官方瀏覽器文字萃取；指定時不發出網絡請求。")
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--min-interval", type=int, default=DEFAULT_MIN_INTERVAL_SECONDS)
     parser.add_argument("--state-file", default="runtime/overseas_deep/.hkjc_s1_market_request_state.json")
@@ -206,8 +266,15 @@ def main() -> int:
     warnings: list[str] = []
     html = None
     try:
+        if args.html and args.text:
+            raise ValueError("--html 與 --text 不能同時指定。")
         if args.html:
             html = Path(args.html).read_text(encoding="utf-8")
+            odds_by_name, metadata = parse_visible_odds_table(html)
+        elif args.text:
+            text = Path(args.text).read_text(encoding="utf-8")
+            odds_by_name, metadata = parse_rendered_hkjc_text(text)
+            warnings.append("HKJC官方頁以已保存的瀏覽器文字萃取離線解析；未新增外部請求。")
         else:
             state_path = Path(args.state_file)
             enforce_min_interval(state_path, max(args.min_interval, DEFAULT_MIN_INTERVAL_SECONDS))
@@ -219,14 +286,16 @@ def main() -> int:
                 warnings.append("HKJC官方頁以靜態公開HTML讀取；未使用登入或互動式操作。")
             else:
                 html = fetch_rendered_public_page(args.odds_url, args.timeout)
-        odds_by_name, metadata = parse_visible_odds_table(html)
-        warnings.append(f"HKJC公開 Win／Place 表已解析 {metadata.get('rows_parsed', 0)} 匹；缺失 Win {len(metadata.get('missing_win_odds', []))}、Place {len(metadata.get('missing_place_odds', []))}。")
+            odds_by_name, metadata = parse_visible_odds_table(html)
+        warnings.append(f"HKJC公開 Win／Place 表已解析 {metadata.get('rows_parsed', 0)} 匹；退出 {metadata.get('scratched_rows', 0)}。")
     except Exception as exc:
         odds_by_name = {}
         warnings.append(f"HKJC公開賠率不可用：{type(exc).__name__}: {exc}；EV／Kelly已停止。")
     enriched = enrich(payload, odds_by_name, args.odds_url, utc_now(), args.place_dividends, args.simulations, args.seed, args.kelly_cap, warnings)
     if html is not None:
         enriched.setdefault("raw_artifacts", {})["hkjc_market"] = save_raw(Path(args.raw_dir), html)
+    if args.text:
+        enriched.setdefault("raw_artifacts", {})["hkjc_market_browser_text"] = str(Path(args.text))
     atomic_json(Path(args.output), enriched)
     persist_snapshot(Path(args.db), Path(args.schema), enriched)
     market = enriched["market_research"]
