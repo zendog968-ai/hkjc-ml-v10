@@ -333,3 +333,33 @@ body {
   border: 1px solid #d8e0e6;
   background: #f5f7f9;
 }
+
+.double-trio-backtest {
+  border: 1px solid #dce5ee;
+  border-radius: .75rem;
+  background: #fbfdff;
+  padding: .9rem 1rem;
+}
+
+.backtest-na {
+  color: #52616b;
+  border: 1px solid #d8e0e6;
+  background: #f5f7f9;
+}
+
+.backtest-exploratory {
+  color: #7c4a03;
+  border: 1px solid #f5d78f;
+  background: #fff9e6;
+}
+
+.backtest-ready {
+  color: #166534;
+  border: 1px solid #b7dfc2;
+  background: #effbf2;
+}
+
+.double-trio-backtest code {
+  color: #394b59;
+  font-size: .78rem;
+}

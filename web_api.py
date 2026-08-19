@@ -30,6 +30,9 @@ MAX_JSON_BYTES = 10 * 1024 * 1024
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 COURSES = {"ST", "HV"}
 DOUBLE_TRIO_ARTIFACT_SUFFIX = "double_trio_official.json"
+DOUBLE_TRIO_BACKTEST_SUMMARY_PATH = Path(
+    os.getenv("HKJC_DOUBLE_TRIO_BACKTEST_SUMMARY", str(PROJECT_ROOT / "reports" / "double_trio_backtest" / "four_horse_summary.json"))
+).expanduser().resolve()
 JOB_DIRECTORY_RE = re.compile(r"^(?P<day>\d{2})_(?P<course>ST|HV)_R(?P<race_no>\d{1,2})$")
 LEGACY_JOB_DIRECTORY_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<course>ST|HV)_R(?P<race_no>\d{1,2})$")
 
@@ -97,6 +100,32 @@ def safely_read_bytes(path: Path, limit: int) -> bytes:
         return path.read_bytes()
     except OSError as exc:
         raise HTTPException(status_code=404, detail="無法讀取指定賽事工件。") from exc
+
+
+def read_json_project_report(path: Path) -> dict[str, Any]:
+    """Read the one allow-listed backtest summary without permitting path selection."""
+    if path != DOUBLE_TRIO_BACKTEST_SUMMARY_PATH or not path.is_file():
+        return {
+            "schema": "v10_double_trio_four_horse_backtest_v1",
+            "readiness": "not_ready",
+            "cohorts": {},
+            "settled_record_count": 0,
+            "notice": "尚未有可稽核的歷史孖T四匹複式結算資料；不以賽後重算或 fixture 代替。",
+        }
+    try:
+        if path.stat().st_size > MAX_JSON_BYTES:
+            raise ValueError("回測摘要超出安全讀取上限")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Double Trio backtest summary unavailable: %s", type(exc).__name__)
+        return {
+            "schema": "v10_double_trio_four_horse_backtest_v1",
+            "readiness": "not_ready",
+            "cohorts": {},
+            "settled_record_count": 0,
+            "notice": "歷史孖T回測摘要暫不可讀取；不會顯示未驗證數值。",
+        }
+    return payload if isinstance(payload, dict) else {"readiness": "not_ready", "cohorts": {}, "settled_record_count": 0, "notice": "回測摘要格式無效；不會顯示未驗證數值。"}
 
 
 def read_json_artifact(path: Path) -> dict[str, Any]:
@@ -282,6 +311,12 @@ async def double_trio_for_date(
     requested_date = parse_iso_date(date)
     normalized_course = normalize_course(course)
     return double_trio_strategy_for_meeting(requested_date, normalized_course)
+
+
+@app.get("/api/double-trio/backtest", tags=["double-trio"])
+async def double_trio_backtest_summary() -> dict[str, Any]:
+    """Return only the allow-listed, cohort-isolated historical backtest summary."""
+    return read_json_project_report(DOUBLE_TRIO_BACKTEST_SUMMARY_PATH)
 
 
 @app.get("/api/report/{date}/{course}/{race_no}", response_class=PlainTextResponse, tags=["reports"])
