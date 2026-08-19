@@ -10,11 +10,16 @@
     predictionMeta: document.getElementById('predictionMeta'),
     predictionTableBody: document.getElementById('predictionTableBody'),
     filterSummary: document.getElementById('filterSummary'),
+    doubleTrioSection: document.getElementById('doubleTrioSection'),
+    doubleTrioContent: document.getElementById('doubleTrioContent'),
     reportSection: document.getElementById('reportSection'),
     reportContent: document.getElementById('reportContent'),
     emptyState: document.getElementById('emptyState'),
     apiStatus: document.getElementById('apiStatus'),
     apiStatusText: document.getElementById('apiStatusText'),
+    n6Status: document.getElementById('n6Status'),
+    n6StatusText: document.getElementById('n6StatusText'),
+    n6ModelSummary: document.getElementById('n6ModelSummary'),
     notification: document.getElementById('notification'),
     notificationText: document.getElementById('notificationText'),
   };
@@ -57,6 +62,21 @@
     if (toast) toast.show();
   }
 
+  function setN6Status(status, detail = '') {
+    elements.n6Status.classList.remove('online', 'offline');
+    if (status === 'available') {
+      elements.n6Status.classList.add('online');
+      elements.n6StatusText.textContent = 'N6 神經訊號已整合';
+      return;
+    }
+    if (status === 'unavailable') {
+      elements.n6Status.classList.add('offline');
+      elements.n6StatusText.textContent = detail || 'N6 訊號暫不可用';
+      return;
+    }
+    elements.n6StatusText.textContent = 'N6 訊號待載入';
+  }
+
   function setLoading(button, loading) {
     button.disabled = loading;
     button.querySelector('.button-text').textContent = loading ? '載入中' : '載入賽程';
@@ -81,11 +101,14 @@
   function clearRaceView() {
     state.activeRaceKey = null;
     elements.predictionSection.classList.add('d-none');
+    elements.doubleTrioSection.classList.add('d-none');
     elements.reportSection.classList.add('d-none');
     elements.emptyState.classList.remove('d-none');
     elements.predictionTableBody.replaceChildren();
+    elements.doubleTrioContent.replaceChildren();
     elements.reportContent.replaceChildren();
     elements.filterSummary.textContent = '';
+    elements.n6ModelSummary.textContent = '';
   }
 
   function renderRaceButtons(races) {
@@ -113,8 +136,11 @@
     const prediction = payload.prediction || {};
     const rows = Array.isArray(prediction.predictions) ? prediction.predictions : [];
     elements.predictionTableBody.replaceChildren();
+    const n6 = prediction.n6_integration || {};
+    const n6Model = n6.model && typeof n6.model === 'object' ? n6.model : null;
+    setN6Status(n6.status, n6.message);
     if (!rows.length) {
-      elements.predictionTableBody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary py-4">prediction.json 沒有可呈現的馬匹列。</td></tr>';
+      elements.predictionTableBody.innerHTML = '<tr><td colspan="10" class="text-center text-secondary py-4">prediction.json 沒有可呈現的馬匹列。</td></tr>';
     }
 
     rows.forEach((row) => {
@@ -123,14 +149,25 @@
       const isPositiveEv = ev !== null && ev > 0;
       const tr = document.createElement('tr');
       if (isPositiveEv) tr.classList.add('positive-ev');
+      if (row.joint_consensus === true) tr.classList.add('joint-consensus');
       const winProbability = toFiniteNumber(row.predicted_win_probability);
+      const neuralScore = toFiniteNumber(row.n6_neural_score);
+      const n6Rank = toFiniteNumber(row.n6_rank);
+      const jointLabel = n6.status !== 'available'
+        ? '<span class="text-secondary small">N6 暫不可用</span>'
+        : (row.joint_consensus === true
+          ? '<span class="badge joint-badge">綜合聯合推薦</span>'
+          : '<span class="text-secondary small">聯合觀察</span>');
       tr.innerHTML = `
         <td class="fw-semibold">${escapeHtml(row.horse_no ?? '—')}</td>
-        <td><span class="fw-semibold">${escapeHtml(row.horse_name ?? '未命名')}</span><br><small class="text-secondary">排名 ${escapeHtml(row.rank ?? '—')}</small></td>
+        <td><span class="fw-semibold">${escapeHtml(row.horse_name ?? '未命名')}</span><br><small class="text-secondary">V10 排名 ${escapeHtml(row.rank ?? '—')}</small></td>
         <td class="text-end"><span class="fw-semibold">${percent(winProbability)}</span><div class="probability-bar ms-auto mt-1"><span style="width:${Math.max(0, Math.min(100, (winProbability || 0) * 100))}%"></span></div></td>
         <td class="text-end">${percent(row.predicted_place_probability)}</td>
         <td class="text-end ${isPositiveEv ? 'ev-positive' : ''}">${decimal(ev)}</td>
         <td class="text-end">${percent(kelly, 2)}</td>
+        <td class="text-end neural-score">${neuralScore === null ? '—' : neuralScore.toFixed(2)}</td>
+        <td class="text-end">${n6Rank === null ? '—' : `#${Math.trunc(n6Rank)}`}</td>
+        <td>${jointLabel}</td>
         <td><small>${escapeHtml(row.win_suggestion || row.suggestion || '—')}</small></td>
       `;
       elements.predictionTableBody.append(tr);
@@ -139,11 +176,68 @@
     const raceMeta = prediction.race || {};
     const model = prediction.model || 'V10 預測模型';
     elements.predictionMeta.textContent = `${race.date} · ${race.course} 第 ${race.race_no} 場 · ${raceMeta.distance_m || '—'}米 · ${raceMeta.going || '場地資料未提供'} · ${model}`;
+    elements.n6ModelSummary.textContent = n6Model
+      ? `N6 ${escapeHtml(n6Model.production_release || '生產模型')} · ${escapeHtml(n6Model.input_dim || '—')} 維輸入 · 市場：${escapeHtml(n6Model.market_feature_policy || '未提供')}`
+      : (n6.status === 'available' ? 'N6 模型資訊未提供；神經評分仍以 N6 服務回應為準。' : 'N6 模型資訊待服務可用後載入。');
     const filter = payload.high_probability_filter;
     elements.filterSummary.innerHTML = filter
       ? `<span class="badge text-bg-primary">篩選候選 ${escapeHtml(filter.selection_count ?? '—')} 匹</span>`
       : '<span class="badge text-bg-light border">未提供雙策略篩選檔</span>';
     elements.predictionSection.classList.remove('d-none');
+  }
+
+  function hkd(value) {
+    const amount = toFiniteNumber(value);
+    return amount === null ? '—' : `HK$${amount.toLocaleString('en-HK', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  }
+
+  function renderDoubleTrio(strategy) {
+    elements.doubleTrioContent.replaceChildren();
+    const events = Array.isArray(strategy?.events) ? strategy.events : [];
+    const readyEvents = events.filter((event) => event?.status === 'ready');
+    if (!readyEvents.length) {
+      const notice = document.createElement('div');
+      notice.className = 'double-trio-awaiting rounded-3';
+      notice.innerHTML = `<strong>孖T策略暫未就緒</strong><br><span>${escapeHtml(strategy?.message || events[0]?.message || '等待香港賽馬會官方指定場次及兩關完整的 V10＋N6 聯合排名。')}</span>`;
+      elements.doubleTrioContent.append(notice);
+      elements.doubleTrioSection.classList.remove('d-none');
+      return;
+    }
+
+    readyEvents.forEach((event) => {
+      const eventCard = document.createElement('article');
+      eventCard.className = 'double-trio-event mb-3';
+      const plan = event.combination_plan || {};
+      const legs = Array.isArray(event.legs) ? event.legs : [];
+      const legHtml = legs.map((leg) => {
+        const selections = Array.isArray(leg.selections) ? leg.selections : [];
+        const selectionHtml = selections.map((runner) => `
+          <div class="double-trio-selection">
+            <div class="d-flex align-items-center gap-2">
+              <span class="double-trio-selection-number">${escapeHtml(runner.horse_no)}</span>
+              <div><span class="fw-semibold">${escapeHtml(runner.horse_name)}</span><br><small class="text-secondary">聯合排名 #${escapeHtml(runner.joint_rank)} · Neural ${decimal(runner.n6_neural_score, 2)}</small></div>
+            </div>
+            <small class="text-end text-secondary">V10 EV ${decimal(runner.v10_ev_per_unit)}</small>
+          </div>`).join('');
+        return `<div class="col-lg-6"><section class="double-trio-leg"><div class="double-trio-leg-title mb-2">第 ${escapeHtml(leg.leg_no)} 關 · 第 ${escapeHtml(leg.race_no)} 場</div>${selectionHtml}</section></div>`;
+      }).join('');
+      eventCard.innerHTML = `
+        <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
+          <div><span class="badge text-bg-light border me-2">${escapeHtml(event.display_label || '官方孖T')}</span><span class="small text-secondary">${escapeHtml(event.pool_event_code || '')}</span></div>
+          <span class="small text-secondary">每關 4 匹 → C(4,3) = 4 組</span>
+        </div>
+        <div class="row g-3">${legHtml}</div>
+        <div class="double-trio-capital mt-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+          <div><strong>精選四匹複式 · ${escapeHtml(plan.total_bet_combinations)} 注</strong><br><small>每關四組三馬組合，兩關交叉組合。</small></div>
+          <div class="text-lg-end"><small class="d-block">每注 ${hkd(plan.unit_stake_hkd)}</small><strong class="fs-5">總建議本金 ${hkd(plan.total_suggested_capital_hkd)}</strong></div>
+        </div>`;
+      elements.doubleTrioContent.append(eventCard);
+    });
+    const disclaimer = document.createElement('p');
+    disclaimer.className = 'double-trio-disclaimer mb-0';
+    disclaimer.textContent = '本區只作賽前模型研究呈現，不會提交、傳送或執行投注；賽馬投注涉及風險，請自行設定可承受損失。';
+    elements.doubleTrioContent.append(disclaimer);
+    elements.doubleTrioSection.classList.remove('d-none');
   }
 
   function renderReport(markdown) {
@@ -158,15 +252,22 @@
     state.activeRaceKey = raceKey;
     document.querySelectorAll('.race-button').forEach((item) => item.classList.toggle('active', item === button));
     clearRaceView();
+    setN6Status('pending');
     state.activeRaceKey = raceKey;
     button.disabled = true;
     button.textContent = `${race.course} 第 ${race.race_no} 場 · 載入中`;
     try {
       const base = `/api/prediction/${encodeURIComponent(race.date)}/${encodeURIComponent(race.course)}/${encodeURIComponent(race.race_no)}`;
       const reportUrl = `/api/report/${encodeURIComponent(race.date)}/${encodeURIComponent(race.course)}/${encodeURIComponent(race.race_no)}`;
-      const [prediction, report] = await Promise.all([request(base), request(reportUrl, 'text')]);
+      const doubleTrioUrl = `/api/double-trio/${encodeURIComponent(race.date)}/${encodeURIComponent(race.course)}`;
+      const [prediction, report, doubleTrio] = await Promise.all([
+        request(base),
+        request(reportUrl, 'text'),
+        request(doubleTrioUrl).catch(() => ({ status: 'official_data_unavailable', events: [], message: '孖T策略資料暫不可讀取。' })),
+      ]);
       if (state.activeRaceKey !== raceKey) return;
       renderPrediction(prediction, race);
+      renderDoubleTrio(doubleTrio);
       renderReport(report);
       elements.emptyState.classList.add('d-none');
     } catch (error) {

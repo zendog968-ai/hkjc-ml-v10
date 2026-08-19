@@ -8,6 +8,7 @@ EV, or Kelly logic.  The V10.2/V10.3 automation pipeline remains independent.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import date as Date
@@ -18,11 +19,17 @@ from fastapi import FastAPI, HTTPException, Path as ApiPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from double_trio_strategy import build_meeting_strategies
+from n6_integration import enrich_prediction
+
+logger = logging.getLogger(__name__)
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = Path(os.getenv("HKJC_RUNTIME_ROOT", str(PROJECT_ROOT / "runtime" / "pre_race"))).expanduser().resolve()
 MAX_JSON_BYTES = 10 * 1024 * 1024
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 COURSES = {"ST", "HV"}
+DOUBLE_TRIO_ARTIFACT_SUFFIX = "double_trio_official.json"
 JOB_DIRECTORY_RE = re.compile(r"^(?P<day>\d{2})_(?P<course>ST|HV)_R(?P<race_no>\d{1,2})$")
 LEGACY_JOB_DIRECTORY_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<course>ST|HV)_R(?P<race_no>\d{1,2})$")
 
@@ -37,7 +44,7 @@ def cors_origins() -> list[str]:
 app = FastAPI(
     title="HKJC ML V10 Read-Only API",
     version="1.0.0",
-    description="唯讀查詢 V10 賽前 prediction、篩選結果與 Markdown 報告；不執行任何模型或檔案寫入。",
+    description="唯讀查詢 V10 賽前 prediction、N6 輔助神經訊號、篩選結果與 Markdown 報告；不執行模型訓練或檔案寫入。",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -162,6 +169,56 @@ def find_job(date_value: Date, course: str, race_no: int) -> Path:
     raise HTTPException(status_code=404, detail="指定日期、馬場或場次尚未產生 prediction.json。")
 
 
+def double_trio_artifact_path(date_value: Date, course: str) -> Path:
+    """Return the fixed, runtime-contained official Double Trio artifact location."""
+    return RUNTIME_ROOT / f"{date_value.year:04d}" / f"{date_value.month:02d}" / f"{date_value.day:02d}_{course}_{DOUBLE_TRIO_ARTIFACT_SUFFIX}"
+
+
+def enrich_for_double_trio(prediction: dict[str, Any], date_value: Date, course: str, race_no: int) -> dict[str, Any]:
+    """Use the existing failure-tolerant N6 enrichment without altering saved data."""
+    try:
+        return enrich_prediction(prediction, date_value.isoformat(), course, race_no)
+    except Exception as exc:  # N6 is optional, but Double Trio must fail closed without a full joint ranking.
+        logger.warning("N6 enrichment for Double Trio failed closed: %s", type(exc).__name__)
+        fallback = dict(prediction)
+        fallback["n6_integration"] = {
+            "status": "unavailable",
+            "message": "N6 聯合排名暫不可用；孖T策略不會以不完整資料選馬。",
+        }
+        return fallback
+
+
+def double_trio_strategy_for_meeting(date_value: Date, course: str) -> dict[str, Any]:
+    """Assemble a display-only strategy from official legs and saved predictions."""
+    artifact_path = double_trio_artifact_path(date_value, course)
+    if not artifact_path.is_file():
+        return {
+            "status": "official_data_unavailable",
+            "meeting": {"race_date": date_value.isoformat(), "racecourse": course},
+            "events": [],
+            "message": "尚未找到可驗證的官方孖T場次工件；系統不會以固定場次代替。",
+        }
+    official_payload = read_json_artifact(artifact_path)
+    predictions_by_race: dict[int, dict[str, Any]] = {}
+    events = official_payload.get("events") if isinstance(official_payload, dict) else []
+    if isinstance(events, list):
+        requested_races = {
+            int(leg["race_no"])
+            for event in events if isinstance(event, dict)
+            for leg in (event.get("legs") if isinstance(event.get("legs"), list) else [])
+            if isinstance(leg, dict) and isinstance(leg.get("race_no"), int)
+        }
+        for race_no in requested_races:
+            try:
+                job_dir = find_job(date_value, course, race_no)
+            except HTTPException:
+                continue
+            predictions_by_race[race_no] = enrich_for_double_trio(
+                read_json_artifact(job_dir / "prediction.json"), date_value, course, race_no
+            )
+    return build_meeting_strategies(official_payload, predictions_by_race)
+
+
 @app.get("/health", tags=["system"])
 async def health() -> dict[str, Any]:
     """Return service health without exposing filesystem paths or mutable state."""
@@ -194,14 +251,37 @@ async def prediction_for_race(
     normalized_race_no = normalize_race_no(race_no)
     job_dir = find_job(requested_date, normalized_course, normalized_race_no)
     prediction = read_json_artifact(job_dir / "prediction.json")
+    try:
+        enriched_prediction = enrich_prediction(
+            prediction, requested_date.isoformat(), normalized_course, normalized_race_no
+        )
+    except Exception as exc:  # N6 is strictly auxiliary; its failure must not block V10 reads.
+        logger.warning("N6 enrichment failed closed: %s", type(exc).__name__)
+        enriched_prediction = dict(prediction)
+        enriched_prediction["n6_integration"] = {
+            "status": "unavailable",
+            "message": "N6 輔助服務暫不可用；V10 原有分析維持不變。",
+            "notice": "未改寫 V10 已保存的勝率、EV、Kelly 或既有風險提示。",
+        }
     filter_path = job_dir / "high_probability_filter.json"
     return {
         "date": requested_date.isoformat(),
         "course": normalized_course,
         "race_no": normalized_race_no,
-        "prediction": prediction,
+        "prediction": enriched_prediction,
         "high_probability_filter": read_json_artifact(filter_path) if filter_path.is_file() else None,
     }
+
+
+@app.get("/api/double-trio/{date}/{course}", tags=["double-trio"])
+async def double_trio_for_date(
+    date: str = ApiPath(..., description="賽日，YYYY-MM-DD"),
+    course: str = ApiPath(..., description="ST 或 HV"),
+) -> dict[str, Any]:
+    """Return a display-only four-horse Double Trio plan from official legs only."""
+    requested_date = parse_iso_date(date)
+    normalized_course = normalize_course(course)
+    return double_trio_strategy_for_meeting(requested_date, normalized_course)
 
 
 @app.get("/api/report/{date}/{course}/{race_no}", response_class=PlainTextResponse, tags=["reports"])

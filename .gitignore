@@ -86,3 +86,9 @@ v102_*_test.json
 v102_*_test.csv
 v102_place_validation.json
 v102_scheduler_test/
+
+# Versioned read-only Dashboard static sources.
+!frontend/
+!frontend/*.html
+!frontend/*.css
+!frontend/*.js

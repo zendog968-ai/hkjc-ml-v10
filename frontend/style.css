@@ -96,6 +96,23 @@ body {
   font-weight: 700;
 }
 
+.neural-score {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.joint-consensus > * {
+  background-color: #fff7df !important;
+}
+
+.joint-badge {
+  color: #5b3b00;
+  background: #fde68a;
+  border: 1px solid #f59e0b;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .probability-bar {
   height: .38rem;
   min-width: 4rem;
@@ -183,4 +200,83 @@ body {
   .hero-panel { border-radius: .8rem !important; }
   .prediction-table { font-size: .86rem; }
   .table-note { font-size: .76rem; }
+}
+
+.double-trio-badge {
+  color: #fff;
+  background: linear-gradient(100deg, #0f766e, #0f4c5c);
+  font-weight: 700;
+  letter-spacing: .03em;
+  padding: .55rem .72rem;
+}
+
+.double-trio-event {
+  border: 1px solid #b9d9d4;
+  background: linear-gradient(135deg, #f0fdfa 0%, #f8fafc 100%);
+  border-radius: .85rem;
+  padding: 1rem;
+}
+
+.double-trio-leg {
+  height: 100%;
+  border: 1px solid #d5e4e1;
+  border-radius: .7rem;
+  background: #fff;
+  padding: .9rem;
+}
+
+.double-trio-leg-title {
+  color: #0f4c5c;
+  font-size: .82rem;
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+
+.double-trio-selection {
+  display: flex;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .45rem 0;
+  border-bottom: 1px dashed #dbe7e5;
+}
+
+.double-trio-selection:last-child { border-bottom: 0; }
+
+.double-trio-selection-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 50%;
+  color: #fff;
+  background: #0f766e;
+  font-size: .82rem;
+  font-weight: 800;
+}
+
+.double-trio-capital {
+  border: 1px solid #f5cc75;
+  border-radius: .75rem;
+  color: #5b3b00;
+  background: #fff8e8;
+  padding: .85rem 1rem;
+}
+
+.double-trio-awaiting {
+  border-left: .3rem solid #f59e0b;
+  color: #6b4f12;
+  background: #fffbeb;
+  padding: .85rem 1rem;
+}
+
+.double-trio-disclaimer {
+  color: var(--muted);
+  font-size: .8rem;
+  line-height: 1.6;
+}
+
+@media (max-width: 575.98px) {
+  .double-trio-event { padding: .8rem; }
+  .double-trio-selection { align-items: flex-start; flex-direction: column; gap: .2rem; }
 }

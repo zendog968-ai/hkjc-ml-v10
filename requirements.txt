@@ -11,4 +11,5 @@ catboost>=1.2
 
 # Read-only local web API; does not participate in V10.2/V10.3 prediction or scheduling.
 fastapi>=0.110,<1
+httpx>=0.27,<1
 uvicorn[standard]>=0.27,<1

@@ -111,11 +111,81 @@ def run_command(command: list[str], output_dir: Path, step: str, timeout: int) -
 
 
 def script_paths(project_dir: Path) -> dict[str, Path]:
-    names = {"racecard": "fetch_hkjc_racecard.py", "odds": "fetch_hkjc_live_odds.py", "predict": "predict.py", "filter": "filter_high_probability.py", "new_horse": "enrich_hkjc_new_horse_priors.py"}
+    names = {
+        "racecard": "fetch_hkjc_racecard.py",
+        "odds": "fetch_hkjc_live_odds.py",
+        "predict": "predict.py",
+        "filter": "filter_high_probability.py",
+        "new_horse": "enrich_hkjc_new_horse_priors.py",
+        "double_trio": "fetch_hkjc_double_trio.py",
+    }
     paths = {key: project_dir / name for key, name in names.items()}
     missing = [path.name for key, path in paths.items() if key != "new_horse" and not path.exists()]
     if missing: raise FileNotFoundError("缺少流程腳本：" + ", ".join(missing))
     return paths
+
+
+def double_trio_output_path(output_root: Path, job: RaceJob) -> Path:
+    """Meeting-level official Double Trio artifact shared by the read-only API."""
+    year, month, day = job.date.split("/")
+    return output_root / year / month / f"{day}_{job.racecourse}_double_trio_official.json"
+
+
+def refresh_double_trio_official(
+    jobs: list[RaceJob],
+    project_dir: Path,
+    output_root: Path,
+    state: dict[str, Any],
+    now: datetime,
+    dry_run: bool,
+) -> list[dict[str, Any]]:
+    """Refresh only unconfirmed official legs, no more than once per five minutes.
+
+    This scraper is deliberately separate from prediction. It writes a meeting-level
+    official event artifact for the read-only Dashboard and never changes any V10
+    prediction, EV, Kelly, racecard or N6 state.
+    """
+    if not jobs:
+        return []
+    double_trio_script = project_dir / "fetch_hkjc_double_trio.py"
+    python = sys.executable
+    results: list[dict[str, Any]] = []
+    by_meeting: dict[tuple[str, str], RaceJob] = {}
+    for job in jobs:
+        by_meeting.setdefault((job.date, job.racecourse), job)
+    registry = state.setdefault("double_trio_official", {})
+    for (race_date, course), anchor in sorted(by_meeting.items()):
+        key = f"{race_date}_{course}"
+        artifact = double_trio_output_path(output_root, anchor)
+        existing = load_json(artifact, {}) if artifact.exists() else {}
+        prior = registry.get(key, {}) if isinstance(registry.get(key), dict) else {}
+        last_checked = prior.get("checked_at")
+        due = existing.get("status") != "official_confirmed"
+        if last_checked:
+            try:
+                due = due and (now - datetime.fromisoformat(str(last_checked))).total_seconds() >= 300
+            except ValueError:
+                pass
+        record: dict[str, Any] = {"meeting": {"race_date": race_date.replace("/", "-"), "racecourse": course}, "artifact": str(artifact)}
+        if not due:
+            results.append({**record, "status": "official_event_already_confirmed" if existing.get("status") == "official_confirmed" else "official_event_rate_limited"})
+            continue
+        if dry_run:
+            results.append({**record, "status": "dry_run_due"})
+            continue
+        if not double_trio_script.is_file():
+            results.append({**record, "status": "failed", "message": "缺少 fetch_hkjc_double_trio.py"})
+            registry[key] = {"checked_at": now.isoformat(), "status": "failed", "artifact": str(artifact)}
+            continue
+        command = [
+            python, str(double_trio_script), "--date", race_date, "--racecourse", course,
+            "--output", str(artifact), "--state-file", str(output_root / "double_trio_rate_limit_state.json"),
+        ]
+        command_result = run_command(command, artifact.parent, "double_trio_official", 60)
+        current = load_json(artifact, {}) if artifact.exists() else {}
+        registry[key] = {"checked_at": now.isoformat(), "status": current.get("status", "failed"), "artifact": str(artifact)}
+        results.append({**record, "status": current.get("status", "failed"), "step": command_result})
+    return results
 
 
 def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Path, odds_min_interval: int, executed_at: datetime) -> dict[str, Any]:
@@ -172,6 +242,7 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
 def process(config_path: Path, project_dir: Path, output_root: Path, state_path: Path, now: datetime, dry_run: bool, odds_min_interval: int) -> dict[str, Any]:
     offsets, jobs = load_jobs(config_path); candidates = due_stages(jobs, offsets, now); state = load_json(state_path, {"runs": {}}); runs = state.setdefault("runs", {})
     result: dict[str, Any] = {"checked_at": now.isoformat(), "snapshot_minutes_before": list(offsets), "configured_jobs": len(jobs), "due_stages": [{"job": job.key, "offset": offset} for job, offset in candidates], "processed": [], "dry_run": dry_run}
+    result["double_trio_official"] = refresh_double_trio_official(jobs, project_dir, output_root, state, now, dry_run)
     for job, offset in candidates:
         job_state = runs.setdefault(job.key, {"stages": {}}); stage_key = f"T_MINUS_{offset}"; prior = job_state.setdefault("stages", {}).get(stage_key, {})
         if prior.get("status") in {"snapshot_collected", "completed"}:
