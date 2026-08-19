@@ -120,6 +120,16 @@
     return number === null ? '—' : number.toFixed(2);
   }
 
+  function overseasProbability(value) {
+    const number = toFiniteNumber(value);
+    return number === null ? '—' : `${(number * 100).toFixed(1)}%`;
+  }
+
+  function overseasEv(value) {
+    const number = toFiniteNumber(value);
+    return number === null ? '—' : `${number > 0 ? '+' : ''}${(number * 100).toFixed(1)}%`;
+  }
+
   function overseasAvailabilityLabel(value) {
     const labels = {
       available_public: '公開可用',
@@ -135,6 +145,8 @@
     const race = payload?.race && typeof payload.race === 'object' ? payload.race : {};
     const starters = Array.isArray(payload?.starters) ? payload.starters.slice() : [];
     const availability = payload?.field_availability && typeof payload.field_availability === 'object' ? payload.field_availability : {};
+    const market = payload?.market_research && typeof payload.market_research === 'object' ? payload.market_research : {};
+    const marketReady = market.status === 'complete' && market.n6_status === 'disabled_non_hk' && market.research_only === true;
     const scrapeStatus = payload?.scrape_run?.status;
     if (!['complete', 'partial'].includes(scrapeStatus) || payload?.n6_integration?.status !== 'disabled_non_hk' || !starters.length) {
       const detail = payload?.n6_integration?.status !== 'disabled_non_hk'
@@ -149,14 +161,17 @@
       const distance = row.distance_runs === null || row.distance_runs === undefined ? '—' : `${escapeHtml(row.distance_wins ?? 0)}/${escapeHtml(row.distance_runs)}`;
       const going = row.similar_going_runs === null || row.similar_going_runs === undefined ? '—' : `${escapeHtml(row.similar_going_wins ?? 0)}/${escapeHtml(row.similar_going_runs)}`;
       const pedigree = [row.sire, row.dam, row.damsire].filter(Boolean).map(escapeHtml).join(' / ') || '—';
-      return `<tr><td class="fw-semibold">#${escapeHtml(row.deep_rank ?? '—')}</td><td>${escapeHtml(row.runner_no ?? '—')}</td><td><strong>${escapeHtml(row.horse_name || '未命名')}</strong><br><small class="text-secondary">檔 ${escapeHtml(row.draw_no ?? '—')} · ${escapeHtml(row.data_completeness || 'partial')}</small></td><td class="text-end">${escapeHtml(row.racing_post_rating ?? '—')}</td><td class="text-end">${escapeHtml(row.top_speed_rating ?? '—')}</td><td>${escapeHtml(distance)}</td><td>${escapeHtml(going)}</td><td><small>${pedigree}</small></td><td class="text-end overseas-score">${overseasScore(row.deep_composite_score)}</td><td class="text-end">${oddsNumber(row.hkjc_win_odds)}</td></tr>`;
+      const entry = row.market_research && typeof row.market_research === 'object' ? row.market_research : {};
+      const positiveEv = marketReady && toFiniteNumber(entry.win_ev) !== null && toFiniteNumber(entry.win_ev) > 0;
+      return `<tr class="${positiveEv ? 'overseas-positive-ev' : ''}"><td class="fw-semibold">#${escapeHtml(row.deep_rank ?? '—')}</td><td>${escapeHtml(row.runner_no ?? '—')}</td><td><strong>${escapeHtml(row.horse_name || '未命名')}</strong><br><small class="text-secondary">檔 ${escapeHtml(row.draw_no ?? '—')} · ${escapeHtml(row.data_completeness || 'partial')}</small></td><td class="text-end">${escapeHtml(row.racing_post_rating ?? '—')}</td><td class="text-end">${escapeHtml(row.top_speed_rating ?? '—')}</td><td>${escapeHtml(distance)}</td><td>${escapeHtml(going)}</td><td><small>${pedigree}</small></td><td class="text-end overseas-score">${overseasScore(row.deep_composite_score)}</td><td class="text-end">${marketReady ? oddsNumber(entry.win_odds) : '—'}</td><td class="text-end ${positiveEv ? 'overseas-ev-positive' : ''}">${marketReady ? overseasEv(entry.win_ev) : '—'}</td><td class="text-end">${marketReady ? oddsNumber(entry.place_odds) : '—'}</td><td class="text-end">${marketReady ? overseasEv(entry.place_ev) : '—'}</td><td class="text-end">${marketReady ? overseasProbability(entry.kelly_fraction) : '—'}</td></tr>`;
     }).join('');
     const warnings = Array.isArray(payload?.scrape_run?.source_notes?.split(' | ')) ? payload.scrape_run.source_notes.split(' | ') : [];
     elements.overseasDeepContent.innerHTML = `
       <div class="overseas-deep-meta mb-3 d-flex flex-wrap justify-content-between gap-2"><div><strong>${escapeHtml(race.venue || '海外賽事')} ${escapeHtml(race.simulcast_code || 'S1')}-${escapeHtml(race.race_no || '—')}</strong><br><small class="text-secondary">${escapeHtml(race.hkt_start_time || '開跑時間待確認')} · ${escapeHtml(race.distance_text || '—')} · ${escapeHtml(race.going || 'Going 待確認')} · ${escapeHtml(race.declared_runners || starters.length)} 匹</small></div><div class="d-flex gap-2"><span class="badge ${scrapeStatus === 'complete' ? 'overseas-complete' : 'overseas-partial'}">${scrapeStatus === 'complete' ? '公開賽卡完整' : '公開賽卡部分可用'}</span><span class="badge overseas-n6-disabled">N6 已停用（海外賽事）</span></div></div>
-      <div class="overseas-deep-status mb-3"><span>RPR：${escapeHtml(overseasAvailabilityLabel(availability.rpr))}</span><span>TS：${escapeHtml(overseasAvailabilityLabel(availability.top_speed))}</span><span>步速：${escapeHtml(overseasAvailabilityLabel(availability.pace_setup))}</span><span>HKJC 賠率：${escapeHtml(overseasAvailabilityLabel(availability.hkjc_odds))}</span></div>
-      <div class="table-responsive"><table class="table table-hover align-middle overseas-deep-table"><thead><tr><th>研究排名</th><th>馬號</th><th>馬匹</th><th class="text-end">RPR</th><th class="text-end">TS</th><th>路程勝／跑</th><th>相近 Going 勝／跑</th><th>血統（父／母／外祖父）</th><th class="text-end">公開綜合分</th><th class="text-end">HKJC 獨贏</th></tr></thead><tbody>${rows}</tbody></table></div>
-      <p class="overseas-deep-disclaimer mb-0">${scrapeStatus === 'partial' ? '此場公開出馬或評分欄位未完整，僅展示已核實馬匹；未取得資料不作推斷。 ' : ''}公開綜合分只按當次可驗證的 RPR、TS 及公開 At The Races 路程、相近 Going、馬場平滑勝率正規化；缺失欄位重新加權而不填補。它不是 V10.2 機率、EV、Kelly 或 N6 Neural Score，亦不構成投注指令。${warnings.length ? ` 來源狀態：${escapeHtml(warnings.join('；'))}` : ''}</p>`;
+      <div class="overseas-deep-status mb-3"><span>RPR：${escapeHtml(overseasAvailabilityLabel(availability.rpr))}</span><span>TS：${escapeHtml(overseasAvailabilityLabel(availability.top_speed))}</span><span>步速：${escapeHtml(overseasAvailabilityLabel(availability.pace_setup))}</span><span>HKJC 賠率：${marketReady ? '官方完整匹配' : '未能安全計算'}</span></div>
+      ${marketReady ? `<div class="overseas-market-status mb-3"><strong>HKJC 官方 Win／Place 快照：</strong>${escapeHtml(market.captured_at_utc || '—')}；${escapeHtml(market.matched_runner_count || '—')}/${escapeHtml(market.expected_runner_count || '—')} 匹身份匹配；位置派彩 ${escapeHtml(market.place_dividends || '—')} 個。</div>` : '<div class="overseas-market-status overseas-market-blocked mb-3">HKJC 市場資料未完成嚴格身份／隔離檢查；Win、Place、EV 與 Kelly 保持空白。</div>'}
+      <div class="table-responsive"><table class="table table-hover align-middle overseas-deep-table"><thead><tr><th>研究排名</th><th>馬號</th><th>馬匹</th><th class="text-end">RPR</th><th class="text-end">TS</th><th>路程勝／跑</th><th>相近 Going 勝／跑</th><th>血統（父／母／外祖父）</th><th class="text-end">公開綜合分</th><th class="text-end">HKJC Win</th><th class="text-end">Win EV</th><th class="text-end">HKJC Place</th><th class="text-end">Place EV</th><th class="text-end">Kelly</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="overseas-deep-disclaimer mb-0">${scrapeStatus === 'partial' ? '此場公開出馬或評分欄位未完整，僅展示已核實馬匹；未取得資料不作推斷。 ' : ''}${marketReady ? 'EV／Kelly 使用未校準海外公開深度分數所生成的研究性場內機率代理；正值只表示此代理相對當刻 HKJC 賠率的數學結果，不構成勝率、回報或投注保證。 ' : ''}公開綜合分只按當次可驗證的 RPR、TS 及公開 At The Races 路程、相近 Going、馬場平滑勝率正規化；缺失欄位重新加權而不填補。它不是 V10.2 機率、EV、Kelly 或 N6 Neural Score，亦不構成投注指令。${warnings.length ? ` 來源狀態：${escapeHtml(warnings.join('；'))}` : ''}</p>`;
     elements.overseasDeepSection.classList.remove('d-none');
   }
 

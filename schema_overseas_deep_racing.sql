@@ -88,3 +88,43 @@ CREATE TABLE IF NOT EXISTS s1_source_field_status (
     captured_at_utc TEXT NOT NULL,
     UNIQUE(s1_starter_id, field_name)
 );
+
+CREATE TABLE IF NOT EXISTS s1_market_research_snapshots (
+    s1_market_snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_date TEXT NOT NULL,
+    simulcast_code TEXT NOT NULL CHECK (simulcast_code GLOB 'S[0-9]*'),
+    race_no INTEGER NOT NULL CHECK (race_no > 0),
+    source_url TEXT NOT NULL,
+    captured_at_utc TEXT NOT NULL,
+    source_status TEXT NOT NULL CHECK (source_status IN ('complete', 'degraded', 'identity_mismatch')),
+    expected_runner_count INTEGER NOT NULL CHECK (expected_runner_count > 0),
+    matched_runner_count INTEGER NOT NULL CHECK (matched_runner_count >= 0),
+    probability_method TEXT NOT NULL,
+    probability_sum REAL,
+    n6_status TEXT NOT NULL CHECK (n6_status = 'disabled_non_hk'),
+    research_only INTEGER NOT NULL CHECK (research_only = 1),
+    warning_text TEXT NOT NULL,
+    UNIQUE(meeting_date, simulcast_code, race_no, captured_at_utc)
+);
+
+CREATE TABLE IF NOT EXISTS s1_market_research_entries (
+    s1_market_entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    s1_market_snapshot_id INTEGER NOT NULL REFERENCES s1_market_research_snapshots(s1_market_snapshot_id) ON DELETE CASCADE,
+    runner_no INTEGER NOT NULL CHECK (runner_no > 0),
+    horse_name TEXT NOT NULL,
+    hkjc_horse_name TEXT,
+    match_status TEXT NOT NULL CHECK (match_status IN ('matched', 'unmatched')),
+    win_odds REAL,
+    place_odds REAL,
+    deep_score REAL,
+    research_win_probability REAL,
+    research_place_probability REAL,
+    win_ev REAL,
+    place_ev REAL,
+    kelly_fraction REAL,
+    ev_kelly_status TEXT NOT NULL CHECK (ev_kelly_status IN ('available_research_only', 'unavailable_identity_or_odds')),
+    UNIQUE(s1_market_snapshot_id, runner_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_s1_market_research_lookup
+    ON s1_market_research_snapshots(meeting_date, simulcast_code, race_no, captured_at_utc);
