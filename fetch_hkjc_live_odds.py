@@ -56,11 +56,15 @@ def parse_visible_odds_table(html: str) -> tuple[dict[str, dict[str, float | Non
         horse_index = win_index = place_index = -1
         for index, row in enumerate(rows):
             cells = [clean_text(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
-            if "馬名" in cells and "獨贏" in cells and "位置" in cells:
+            lowered = [cell.lower() for cell in cells]
+            horse_label = "馬名" if "馬名" in cells else ("horsename" if "horsename" in lowered else None)
+            win_label = "獨贏" if "獨贏" in cells else ("win" if "win" in lowered else None)
+            place_label = "位置" if "位置" in cells else ("place" if "place" in lowered else None)
+            if horse_label is not None and win_label is not None and place_label is not None:
                 header_index = index
-                horse_index = cells.index("馬名")
-                win_index = cells.index("獨贏")
-                place_index = cells.index("位置")
+                horse_index = cells.index(horse_label) if horse_label == "馬名" else lowered.index(horse_label)
+                win_index = cells.index(win_label) if win_label == "獨贏" else lowered.index(win_label)
+                place_index = cells.index(place_label) if place_label == "位置" else lowered.index(place_label)
                 break
         if header_index < 0:
             continue
@@ -73,7 +77,7 @@ def parse_visible_odds_table(html: str) -> tuple[dict[str, dict[str, float | Non
             if len(cells) <= max(horse_index, win_index, place_index):
                 continue
             horse = cells[horse_index]
-            if not horse or horse in {"全餐", "F"}:
+            if not horse or horse.casefold() in {"全餐", "f", "field"}:
                 continue
             if is_scratched_row(cells):
                 scratched.append(horse)

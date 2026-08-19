@@ -449,3 +449,27 @@ body {
   border: 1px solid #f5d78f;
   background: #fff9e6;
 }
+
+.overseas-market-status {
+  color: #164e63;
+  border-left: 3px solid #38bdf8;
+  background: #f0f9ff;
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.35rem;
+  font-size: 0.86rem;
+}
+
+.overseas-market-blocked {
+  color: #7c2d12;
+  border-left-color: #fb923c;
+  background: #fff7ed;
+}
+
+.overseas-positive-ev td {
+  background: #f0fdf4 !important;
+}
+
+.overseas-ev-positive {
+  color: #166534;
+  font-weight: 700;
+}
