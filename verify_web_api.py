@@ -69,6 +69,14 @@ def main() -> int:
                 "events": [{"pool_event_code": "DT-FIXTURE-R3-R7", "display_label": "第1口孖T", "legs": [{"leg_no": 1, "race_no": 3}, {"leg_no": 2, "race_no": 7}]}],
             },
         )
+        backtest_summary_path = fixture_root / "double_trio_backtest_summary.json"
+        write_json(backtest_summary_path, {
+            "schema": "v10_double_trio_four_horse_backtest_v1",
+            "readiness": "ready",
+            "settled_record_count": 2,
+            "cohort_policy": "Results are segregated by base_model_sha256 and are never aggregated across model retraining versions.",
+            "cohorts": {"a" * 64: {"status": "exploratory", "settled_event_count": 2, "hit_count": 1, "hit_rate": 0.5, "roi": 0.25}},
+        })
         before = digest_tree(fixture_root)
 
         os.environ["HKJC_RUNTIME_ROOT"] = str(fixture_root)
@@ -87,6 +95,7 @@ def main() -> int:
             return enriched
 
         web_api.enrich_prediction = fake_n6_enrichment
+        web_api.DOUBLE_TRIO_BACKTEST_SUMMARY_PATH = backtest_summary_path.resolve()
         with TestClient(web_api.app) as client:
             health = client.get("/health")
             assert health.status_code == 200, health.text
@@ -132,6 +141,12 @@ def main() -> int:
             assert event["odds_monitoring_summary"]["large_movement_count"] == 4
             assert event["legs"][0]["odds_monitoring"]["selections"][0]["movement_status"] == "large_shortening"
 
+            backtest = client.get("/api/double-trio/backtest")
+            assert backtest.status_code == 200, backtest.text
+            assert backtest.json()["readiness"] == "ready"
+            assert backtest.json()["settled_record_count"] == 2
+            assert list(backtest.json()["cohorts"]) == ["a" * 64]
+
             report = client.get("/api/report/2026-08-18/ST/1")
             assert report.status_code == 200, report.text
             assert report.headers["content-type"].startswith("text/markdown")
@@ -155,7 +170,7 @@ def main() -> int:
         assert before == after, "唯讀 API 測試後 runtime 工件被修改"
         print(json.dumps({
             "status": "PASS",
-            "endpoints": ["/health", "/api/races/{date}", "/api/prediction/{date}/{course}/{race_no}", "/api/double-trio/{date}/{course}", "/api/report/{date}/{course}/{race_no}"],
+            "endpoints": ["/health", "/api/races/{date}", "/api/prediction/{date}/{course}/{race_no}", "/api/double-trio/{date}/{course}", "/api/double-trio/backtest", "/api/report/{date}/{course}/{race_no}"],
             "cors": "PASS",
             "read_only_artifacts": "PASS",
         }, ensure_ascii=False))

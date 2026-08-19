@@ -209,7 +209,25 @@
     return 'odds-movement-unavailable';
   }
 
-  function renderDoubleTrio(strategy) {
+  function backtestPercent(value) {
+    const number = toFiniteNumber(value);
+    return number === null ? 'N/A' : `${(number * 100).toFixed(1)}%`;
+  }
+
+  function renderDoubleTrioBacktest(summary) {
+    const card = document.createElement('section');
+    card.className = 'double-trio-backtest mt-3';
+    const cohorts = summary?.cohorts && typeof summary.cohorts === 'object' ? Object.entries(summary.cohorts) : [];
+    if (summary?.readiness !== 'ready' || !cohorts.length) {
+      card.innerHTML = `<div class="d-flex flex-wrap justify-content-between gap-2 align-items-center"><div><strong>四匹複式歷史回測</strong><br><small class="text-secondary">勝率與回報率：N/A</small></div><span class="badge backtest-na">資料不足</span></div><p class="small text-secondary mb-0 mt-2">${escapeHtml(summary?.notice || '尚未有可稽核的賽前四匹決策、官方頭三與派彩結算資料；系統不會以賽後重算或測試資料代替。')}</p>`;
+      return card;
+    }
+    const rows = cohorts.map(([sha, cohort]) => `<tr><td><code>${escapeHtml(sha.slice(0, 12))}</code></td><td>${escapeHtml(cohort.settled_event_count)}</td><td>${escapeHtml(cohort.hit_count)}</td><td>${backtestPercent(cohort.hit_rate)}</td><td class="${toFiniteNumber(cohort.roi) !== null && cohort.roi > 0 ? 'positive-ev' : ''}">${backtestPercent(cohort.roi)}</td><td><span class="badge ${cohort.status === 'exploratory' ? 'backtest-exploratory' : 'backtest-ready'}">${escapeHtml(cohort.status === 'exploratory' ? '探索性' : '資料充足')}</span></td></tr>`).join('');
+    card.innerHTML = `<div class="d-flex flex-wrap justify-content-between gap-2 align-items-center"><div><strong>四匹複式歷史回測</strong><br><small class="text-secondary">每個模型 SHA-256 cohort 獨立結算，不跨版本混合。</small></div><span class="badge backtest-ready">已結算 ${escapeHtml(summary.settled_record_count)} 個事件</span></div><div class="table-responsive mt-2"><table class="table table-sm mb-1"><thead><tr><th>模型版本</th><th>事件</th><th>命中</th><th>勝率</th><th>ROI</th><th>樣本標籤</th></tr></thead><tbody>${rows}</tbody></table></div><p class="small text-secondary mb-0">${escapeHtml(summary.notice || '僅使用不可變賽前決策與官方結算資料。')}</p>`;
+    return card;
+  }
+
+  function renderDoubleTrio(strategy, backtest) {
     elements.doubleTrioContent.replaceChildren();
     const events = Array.isArray(strategy?.events) ? strategy.events : [];
     const readyEvents = events.filter((event) => event?.status === 'ready');
@@ -218,6 +236,7 @@
       notice.className = 'double-trio-awaiting rounded-3';
       notice.innerHTML = `<strong>孖T策略暫未就緒</strong><br><span>${escapeHtml(strategy?.message || events[0]?.message || '等待香港賽馬會官方指定場次及兩關完整的 V10＋N6 聯合排名。')}</span>`;
       elements.doubleTrioContent.append(notice);
+      elements.doubleTrioContent.append(renderDoubleTrioBacktest(backtest));
       elements.doubleTrioSection.classList.remove('d-none');
       return;
     }
@@ -272,6 +291,7 @@
     disclaimer.className = 'double-trio-disclaimer mb-0';
     disclaimer.textContent = '賠率監控只呈現既有官方 T-15／T-5 快照的公開變動，並不代表資金來源、內幕資訊、勝出保證或投注指令。本區不會提交、傳送或執行投注。';
     elements.doubleTrioContent.append(disclaimer);
+    elements.doubleTrioContent.append(renderDoubleTrioBacktest(backtest));
     elements.doubleTrioSection.classList.remove('d-none');
   }
 
@@ -295,14 +315,16 @@
       const base = `/api/prediction/${encodeURIComponent(race.date)}/${encodeURIComponent(race.course)}/${encodeURIComponent(race.race_no)}`;
       const reportUrl = `/api/report/${encodeURIComponent(race.date)}/${encodeURIComponent(race.course)}/${encodeURIComponent(race.race_no)}`;
       const doubleTrioUrl = `/api/double-trio/${encodeURIComponent(race.date)}/${encodeURIComponent(race.course)}`;
-      const [prediction, report, doubleTrio] = await Promise.all([
+      const doubleTrioBacktestUrl = '/api/double-trio/backtest';
+      const [prediction, report, doubleTrio, doubleTrioBacktest] = await Promise.all([
         request(base),
         request(reportUrl, 'text'),
         request(doubleTrioUrl).catch(() => ({ status: 'official_data_unavailable', events: [], message: '孖T策略資料暫不可讀取。' })),
+        request(doubleTrioBacktestUrl).catch(() => ({ readiness: 'not_ready', cohorts: {}, notice: '歷史回測摘要暫不可讀取；不會顯示未驗證數值。' })),
       ]);
       if (state.activeRaceKey !== raceKey) return;
       renderPrediction(prediction, race);
-      renderDoubleTrio(doubleTrio);
+      renderDoubleTrio(doubleTrio, doubleTrioBacktest);
       renderReport(report);
       elements.emptyState.classList.add('d-none');
     } catch (error) {
