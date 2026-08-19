@@ -437,3 +437,15 @@ body {
 @media (max-width: 575.98px) {
   .overseas-race-selector { flex: 1 1 5.25rem; }
 }
+
+.overseas-complete {
+  color: #166534;
+  border: 1px solid #b7dfc2;
+  background: #effbf2;
+}
+
+.overseas-partial {
+  color: #7c4a03;
+  border: 1px solid #f5d78f;
+  background: #fff9e6;
+}

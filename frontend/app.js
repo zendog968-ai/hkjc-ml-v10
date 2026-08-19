@@ -135,7 +135,8 @@
     const race = payload?.race && typeof payload.race === 'object' ? payload.race : {};
     const starters = Array.isArray(payload?.starters) ? payload.starters.slice() : [];
     const availability = payload?.field_availability && typeof payload.field_availability === 'object' ? payload.field_availability : {};
-    if (payload?.scrape_run?.status !== 'complete' || payload?.n6_integration?.status !== 'disabled_non_hk' || !starters.length) {
+    const scrapeStatus = payload?.scrape_run?.status;
+    if (!['complete', 'partial'].includes(scrapeStatus) || payload?.n6_integration?.status !== 'disabled_non_hk' || !starters.length) {
       const detail = payload?.n6_integration?.status !== 'disabled_non_hk'
         ? '海外資料的 N6 隔離狀態無效；系統已安全停止呈現。'
         : (payload?.scrape_run?.source_notes || '等待可驗證的公開海外賽事資料工件。');
@@ -152,10 +153,10 @@
     }).join('');
     const warnings = Array.isArray(payload?.scrape_run?.source_notes?.split(' | ')) ? payload.scrape_run.source_notes.split(' | ') : [];
     elements.overseasDeepContent.innerHTML = `
-      <div class="overseas-deep-meta mb-3 d-flex flex-wrap justify-content-between gap-2"><div><strong>${escapeHtml(race.venue || '海外賽事')} ${escapeHtml(race.simulcast_code || 'S1')}-${escapeHtml(race.race_no || '—')}</strong><br><small class="text-secondary">${escapeHtml(race.hkt_start_time || '開跑時間待確認')} · ${escapeHtml(race.distance_text || '—')} · ${escapeHtml(race.going || 'Going 待確認')} · ${escapeHtml(race.declared_runners || starters.length)} 匹</small></div><span class="badge overseas-n6-disabled">N6 已停用（海外賽事）</span></div>
+      <div class="overseas-deep-meta mb-3 d-flex flex-wrap justify-content-between gap-2"><div><strong>${escapeHtml(race.venue || '海外賽事')} ${escapeHtml(race.simulcast_code || 'S1')}-${escapeHtml(race.race_no || '—')}</strong><br><small class="text-secondary">${escapeHtml(race.hkt_start_time || '開跑時間待確認')} · ${escapeHtml(race.distance_text || '—')} · ${escapeHtml(race.going || 'Going 待確認')} · ${escapeHtml(race.declared_runners || starters.length)} 匹</small></div><div class="d-flex gap-2"><span class="badge ${scrapeStatus === 'complete' ? 'overseas-complete' : 'overseas-partial'}">${scrapeStatus === 'complete' ? '公開賽卡完整' : '公開賽卡部分可用'}</span><span class="badge overseas-n6-disabled">N6 已停用（海外賽事）</span></div></div>
       <div class="overseas-deep-status mb-3"><span>RPR：${escapeHtml(overseasAvailabilityLabel(availability.rpr))}</span><span>TS：${escapeHtml(overseasAvailabilityLabel(availability.top_speed))}</span><span>步速：${escapeHtml(overseasAvailabilityLabel(availability.pace_setup))}</span><span>HKJC 賠率：${escapeHtml(overseasAvailabilityLabel(availability.hkjc_odds))}</span></div>
       <div class="table-responsive"><table class="table table-hover align-middle overseas-deep-table"><thead><tr><th>研究排名</th><th>馬號</th><th>馬匹</th><th class="text-end">RPR</th><th class="text-end">TS</th><th>路程勝／跑</th><th>相近 Going 勝／跑</th><th>血統（父／母／外祖父）</th><th class="text-end">公開綜合分</th><th class="text-end">HKJC 獨贏</th></tr></thead><tbody>${rows}</tbody></table></div>
-      <p class="overseas-deep-disclaimer mb-0">公開綜合分只按當次可驗證的 RPR、TS 及公開 At The Races 路程、相近 Going、馬場平滑勝率正規化；缺失欄位重新加權而不填補。它不是 V10.2 機率、EV、Kelly 或 N6 Neural Score，亦不構成投注指令。${warnings.length ? ` 來源狀態：${escapeHtml(warnings.join('；'))}` : ''}</p>`;
+      <p class="overseas-deep-disclaimer mb-0">${scrapeStatus === 'partial' ? '此場公開出馬或評分欄位未完整，僅展示已核實馬匹；未取得資料不作推斷。 ' : ''}公開綜合分只按當次可驗證的 RPR、TS 及公開 At The Races 路程、相近 Going、馬場平滑勝率正規化；缺失欄位重新加權而不填補。它不是 V10.2 機率、EV、Kelly 或 N6 Neural Score，亦不構成投注指令。${warnings.length ? ` 來源狀態：${escapeHtml(warnings.join('；'))}` : ''}</p>`;
     elements.overseasDeepSection.classList.remove('d-none');
   }
 
