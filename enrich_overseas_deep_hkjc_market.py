@@ -44,6 +44,24 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def wait_for_hkjc_interval(state_path: Path, minimum_seconds: int) -> None:
+    """Respect the full interval; only wait for the remaining boundary fraction, never bypass it."""
+    try:
+        enforce_min_interval(state_path, minimum_seconds)
+        return
+    except RuntimeError:
+        pass
+    try:
+        previous = json.loads(state_path.read_text(encoding="utf-8"))
+        elapsed = time.time() - float(previous.get("last_request_epoch", 0))
+    except (json.JSONDecodeError, ValueError, OSError):
+        raise
+    remaining = float(minimum_seconds) - elapsed
+    if remaining > 0:
+        time.sleep(remaining + 0.1)
+    enforce_min_interval(state_path, minimum_seconds)
+
+
 def parse_odd(value: Any) -> float | None:
     if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 1.0:
         return None
@@ -261,8 +279,8 @@ def main() -> int:
         raise SystemExit("kelly-cap 必須介乎 0 與 0.05，以維持既有 V10 上限。")
     payload = json.loads(Path(args.deep_input).read_text(encoding="utf-8"))
     race = payload.get("race") or {}
-    if race.get("simulcast_code") not in {"S1", "S2"} or payload.get("n6_integration", {}).get("status") != "disabled_non_hk":
-        raise SystemExit("只接受明確 S1/S2 及 N6 disabled_non_hk 的海外工件。")
+    if race.get("simulcast_code") not in {"S1", "S2", "S3"} or payload.get("n6_integration", {}).get("status") != "disabled_non_hk":
+        raise SystemExit("只接受明確 S1/S2/S3 及 N6 disabled_non_hk 的海外工件。")
     warnings: list[str] = []
     html = None
     try:
@@ -277,7 +295,7 @@ def main() -> int:
             warnings.append("HKJC官方頁以已保存的瀏覽器文字萃取離線解析；未新增外部請求。")
         else:
             state_path = Path(args.state_file)
-            enforce_min_interval(state_path, max(args.min_interval, DEFAULT_MIN_INTERVAL_SECONDS))
+            wait_for_hkjc_interval(state_path, max(args.min_interval, DEFAULT_MIN_INTERVAL_SECONDS))
             atomic_json_write(state_path, {"last_request_epoch": time.time(), "url": args.odds_url})
             if args.prefer_static_public_html:
                 html, error = fetch_public(args.odds_url, args.timeout)

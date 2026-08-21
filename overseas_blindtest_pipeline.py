@@ -177,8 +177,8 @@ def validate_manifest(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         date = source.get("meeting_date")
         code = str(source.get("simulcast_code", "")).upper()
         race_no = source.get("race_no")
-        if not isinstance(date, str) or code not in {"S1", "S2"} or not isinstance(race_no, int) or race_no < 1:
-            raise ValueError("每場必須有 meeting_date、S1/S2、正整數 race_no。")
+        if not isinstance(date, str) or code not in {"S1", "S2", "S3"} or not isinstance(race_no, int) or race_no < 1:
+            raise ValueError("每場必須有 meeting_date、S1/S2/S3、正整數 race_no。")
         event_key = f"{date}:{code}:{race_no}"
         if event_key in seen:
             raise ValueError(f"manifest event 重複：{event_key}")
@@ -437,11 +437,37 @@ def settle_result(
         official.close()
 
 
+def validate_manifest_offline(args: argparse.Namespace) -> int:
+    """Validate manifest syntax and contract only; it never opens a network connection or ledger."""
+    manifest_path = Path(args.manifest)
+    report_path = Path(args.validation_report)
+    if not manifest_path.is_file():
+        atomic_replace_json(report_path, {"status": "missing_manifest", "checked_at_utc": utc_now(), "manifest": str(manifest_path), "network_access": "none"})
+        print(json.dumps({"status": "missing_manifest", "report": str(report_path)}, ensure_ascii=False))
+        return 1
+    try:
+        raw = manifest_path.read_bytes()
+        events = validate_manifest(json.loads(raw.decode("utf-8")))
+        report = {
+            "status": "valid_offline", "checked_at_utc": utc_now(), "manifest": str(manifest_path),
+            "manifest_sha256": sha256_bytes(raw), "study_id": DEFAULT_STUDY_ID, "max_events": 15,
+            "event_keys": [event["event_key"] for event in events], "scheduled_start_utc": [event["scheduled_start_utc"] for event in events],
+            "n6_status_required": "disabled_non_hk", "network_access": "none",
+        }
+        atomic_replace_json(report_path, report)
+        print(json.dumps({"status": report["status"], "events": len(events), "report": str(report_path)}, ensure_ascii=False))
+        return 0
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        atomic_replace_json(report_path, {"status": "invalid_offline", "checked_at_utc": utc_now(), "manifest": str(manifest_path), "error": f"{type(exc).__name__}: {exc}", "network_access": "none"})
+        print(json.dumps({"status": "invalid_offline", "report": str(report_path)}, ensure_ascii=False))
+        return 1
+
+
 def tick(args: argparse.Namespace) -> int:
     manifest_path = Path(args.manifest)
     status_path = Path(args.status)
     if not manifest_path.is_file():
-        atomic_replace_json(status_path, {"status": "awaiting_official_manifest", "checked_at_utc": utc_now(), "message": "未有已核實未來S1/S2 manifest；不會猜測賽程或發出外部請求。", "n6_status": "disabled_non_hk"})
+        atomic_replace_json(status_path, {"status": "awaiting_official_manifest", "checked_at_utc": utc_now(), "message": "未有已核實未來S1/S2/S3 manifest；不會猜測賽程或發出外部請求。", "n6_status": "disabled_non_hk"})
         print(json.dumps({"status": "awaiting_official_manifest"}, ensure_ascii=False))
         return 0
     manifest_bytes = manifest_path.read_bytes()
@@ -565,7 +591,7 @@ def simulate(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="未來15場海外RPR/TS研究盲測的不可變賽前封存及賽後結算。")
-    parser.add_argument("--mode", choices=["tick", "simulate"], default="tick")
+    parser.add_argument("--mode", choices=["tick", "simulate", "validate-manifest"], default="tick")
     parser.add_argument("--manifest", default="runtime/overseas_blindtest/active_manifest.json")
     parser.add_argument("--ledger", default="runtime/overseas_blindtest/overseas_blindtest.sqlite")
     parser.add_argument("--status", default="runtime/overseas_blindtest/status.json")
@@ -578,10 +604,15 @@ def main() -> int:
     parser.add_argument("--canonical-schema", default="schema_overseas_racing.sql")
     parser.add_argument("--capture-window-minutes", type=float, default=15.0)
     parser.add_argument("--simulation-dir", default="reports/overseas_deep/OVERSEAS_BLINDTEST_PIPELINE_SIMULATION_2026-08-20")
+    parser.add_argument("--validation-report", default="reports/overseas_deep/OVERSEAS_BLINDTEST_MANIFEST_VALIDATION.json")
     args = parser.parse_args()
     if not 5.0 <= args.capture_window_minutes <= 20.0:
         raise SystemExit("capture-window-minutes 必須介乎5至20分鐘，且實際封存仍須嚴格早於開跑。")
-    return simulate(args) if args.mode == "simulate" else tick(args)
+    if args.mode == "simulate":
+        return simulate(args)
+    if args.mode == "validate-manifest":
+        return validate_manifest_offline(args)
+    return tick(args)
 
 
 if __name__ == "__main__":
