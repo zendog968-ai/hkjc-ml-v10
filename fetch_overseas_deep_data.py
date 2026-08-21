@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Polite public-page deep-data prototype for overseas S1/S2 racing.
+"""Polite public-page deep-data prototype for overseas S1/S2/S3 racing.
 
 This module deliberately has no import of V10 local SQLite or N6.  It never
 bypasses login, paywalls, robots controls, or anti-bot mechanisms. Restricted
@@ -248,7 +248,7 @@ def persist(db_path: Path, schema_path: Path, payload: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="海外 S1/S2 公開深度資料原型（RPR/TS/公開 form；N6 停用）")
+    parser = argparse.ArgumentParser(description="海外 S1/S2/S3 公開深度資料原型（RPR/TS/公開 form；N6 停用）")
     parser.add_argument("--date", default="2026-08-19")
     parser.add_argument("--simulcast-code", default="S1")
     parser.add_argument("--race-no", type=int, default=1)
@@ -269,7 +269,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=25)
     args = parser.parse_args()
     if not re.fullmatch(r"S\d+", args.simulcast_code.upper()) or args.race_no < 1:
-        raise SystemExit("simulcast-code 必須為 S1/S2，race-no 必須為正整數")
+        raise SystemExit("simulcast-code 必須為 S1/S2/S3，race-no 必須為正整數")
     rp_html = Path(args.racing_post_html).read_text(encoding="utf-8") if args.racing_post_html else None
     atr_html = Path(args.at_the_races_html).read_text(encoding="utf-8") if args.at_the_races_html else None
     rp_error = None if rp_html is not None else None
@@ -303,7 +303,7 @@ def main() -> int:
         "schema_version": "v10_overseas_deep_scraper_v1",
         "scrape_run": {"meeting_date": args.date, "simulcast_code": args.simulcast_code.upper(), "race_no": args.race_no, "venue": args.venue, "status": status, "n6_status": "disabled_non_hk", "fetched_at_utc": fetched_at, "racing_post_url": args.racing_post_url, "at_the_races_url": args.at_the_races_url, "timeform_url": args.timeform_url, "hkjc_odds_source": args.hkjc_odds_url, "source_notes": " | ".join(notes)},
         "race": {"meeting_date": args.date, "simulcast_code": args.simulcast_code.upper(), "race_no": args.race_no, "venue": args.venue, "local_start_time": args.local_start_time, "hkt_start_time": args.hkt_start_time, "source_status": "complete" if rp_rows else "degraded", **rp_race},
-        "n6_integration": {"status": "disabled_non_hk", "message": "S1/S2 uses overseas deep-data scoring only; HK-trained N6 Neural Score is not invoked."},
+        "n6_integration": {"status": "disabled_non_hk", "message": "S1/S2/S3 uses overseas deep-data scoring only; HK-trained N6 Neural Score is not invoked."},
         "field_availability": {"rpr": "available_public" if rp_rows else "unavailable_parse", "top_speed": "available_public" if rp_rows else "unavailable_parse", "pace_setup": "unavailable_paid_or_restricted", "timeform_tfr": "unavailable_paid_or_restricted", "hkjc_odds": "not_requested" if args.skip_hkjc_odds else ("available_public" if odds else "unavailable_parse")},
         "scoring_method": "Public-field min-max composite: RPR 50%, TS 25%, smoothed distance win-rate 10%, smoothed similar-going win-rate 10%, smoothed course win-rate 5%. Missing fields are reweighted, never imputed; condition rates use a Beta(1,4) prior. This is an overseas research score, not V10 probability/EV/Kelly.",
         "starters": rows,

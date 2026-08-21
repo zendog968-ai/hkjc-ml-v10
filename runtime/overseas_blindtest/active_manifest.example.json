@@ -1,0 +1,24 @@
+{
+  "schema_version": "overseas_blindtest_manifest_v1",
+  "study_id": "overseas_rpr_ts_exploratory_15_v1",
+  "max_events": 15,
+  "notice": "此為範本，不能改名為 active_manifest.json 後直接使用。每一場必須先由HKJC官方海外賽程及公開賽卡核實。支援的轉播代碼為S1、S2及S3。未有正式active_manifest.json時，計時器只寫入 awaiting_official_manifest 狀態，且不會發出外部請求。",
+  "events": [
+    {
+      "meeting_date": "YYYY-MM-DD",
+      "simulcast_code": "S1",
+      "race_no": 1,
+      "venue": "Verified venue name",
+      "scheduled_start_utc": "YYYY-MM-DDTHH:MM:SSZ",
+      "local_start_time": "Verified local time",
+      "hkt_start_time": "Verified HKT time",
+      "place_dividends": 3,
+      "fixture_url": "https://racing.hkjc.com/en-us/overseas/simulcast_fixture?y=YYYY-YYYY",
+      "summary_url": "https://racing.hkjc.com/en-us/overseas/race-summary?RaceDate=YYYYMMDD&Racecourse=S1",
+      "racing_post_url": "https://www.racingpost.com/racecards/...",
+      "at_the_races_url": "https://www.attheraces.com/racecards/...",
+      "hkjc_win_place_url": "https://bet.hkjc.com/en/racing/wp/YYYY-MM-DD/S1/1",
+      "hkjc_result_url": "https://racing.hkjc.com/en-us/overseas/results?RaceDate=YYYYMMDD&Racecourse=S1&RaceNo=1"
+    }
+  ]
+}
