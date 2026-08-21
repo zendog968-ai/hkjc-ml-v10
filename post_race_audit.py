@@ -63,7 +63,12 @@ def load_latest_overseas_prediction(conn: sqlite3.Connection, race_id: int) -> l
     preserving the generated-at audit timestamp.  It never creates a prediction
     from post-race fields when no pre-race batch exists.
     """
-    batch = conn.execute("SELECT MAX(generated_at_utc) FROM overseas_prerace_predictions WHERE overseas_race_id=?", (race_id,)).fetchone()[0]
+    batch = conn.execute("""SELECT MAX(p.generated_at_utc)
+                              FROM overseas_prerace_predictions AS p
+                              JOIN overseas_races AS r ON r.overseas_race_id=p.overseas_race_id
+                              WHERE p.overseas_race_id=?
+                                AND r.scheduled_start_utc IS NOT NULL
+                                AND datetime(p.generated_at_utc) < datetime(r.scheduled_start_utc)""", (race_id,)).fetchone()[0]
     if not batch:
         return []
     rows = conn.execute("""SELECT horse_no,predicted_win_probability,predicted_place_probability,win_odds_at_capture AS win_odds,

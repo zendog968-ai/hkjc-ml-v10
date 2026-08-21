@@ -1,0 +1,11 @@
+[Unit]
+Description=Run HKJC overseas 15-event blind-test pipeline every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=5s
+Persistent=true
+Unit=hkjc-overseas-blindtest.service
+
+[Install]
+WantedBy=timers.target

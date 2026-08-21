@@ -95,3 +95,10 @@ v102_scheduler_test/
 
 # Versioned SQLite schema definitions; database files remain excluded above.
 !schema_overseas_deep_racing.sql
+
+# Versioned overseas 15-event blind-test deployment templates; runtime evidence remains ignored.
+!deploy/
+!deploy/hkjc-overseas-blindtest.service
+!deploy/hkjc-overseas-blindtest.timer
+!runtime/overseas_blindtest/
+!runtime/overseas_blindtest/active_manifest.example.json
