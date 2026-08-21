@@ -1,0 +1,22 @@
+[Unit]
+Description=HKJC V10 overseas 15-event blind-test pre-race capture and settlement
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/home/ubuntu/hkjc_v10_database/overseas_blindtest_pipeline.py
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/hkjc_v10_database
+UMask=0027
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/ubuntu/hkjc_v10_database/runtime/overseas_blindtest /home/ubuntu/hkjc_v10_database/archive/overseas_deep_backtest /home/ubuntu/hkjc_v10_database/archive/overseas_deep_raw /home/ubuntu/hkjc_v10_database/archive/overseas_official_raw /home/ubuntu/hkjc_v10_database/overseas_blindtest_official.sqlite
+ExecStart=/usr/bin/flock -n /home/ubuntu/hkjc_v10_database/runtime/overseas_blindtest/host.lock /home/ubuntu/hkjc_v10_database/.venv/bin/python /home/ubuntu/hkjc_v10_database/overseas_blindtest_pipeline.py --mode tick
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target
