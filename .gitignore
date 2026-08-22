@@ -107,8 +107,7 @@ v102_scheduler_test/
 !run_overseas_blindtest_with_candidate_audit.sh
 !deploy/hkjc-overseas-blindtest.service.d/
 !deploy/hkjc-overseas-blindtest.service.d/*.conf
-
-# Versioned preseason P0 source and empty manifest contract; PP/trial raw files,
+# Versioned preseason P0/P1 source and empty manifest contracts; PP/trial raw files,
 # actual manifests, candidate SQLite databases and reports remain runtime-only.
 !preseason_candidate/
 !preseason_candidate/*.py
