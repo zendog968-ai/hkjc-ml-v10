@@ -102,3 +102,8 @@ v102_scheduler_test/
 !deploy/hkjc-overseas-blindtest.timer
 !runtime/overseas_blindtest/
 !runtime/overseas_blindtest/active_manifest.example.json
+
+# Versioned candidate-calibration deployment source; all runtime status remains ignored.
+!run_overseas_blindtest_with_candidate_audit.sh
+!deploy/hkjc-overseas-blindtest.service.d/
+!deploy/hkjc-overseas-blindtest.service.d/*.conf
