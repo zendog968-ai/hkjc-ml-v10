@@ -1,0 +1,39 @@
+{
+  "manifest_version": "preseason_p0_manifest_v1",
+  "candidate_schema_version": "n6_preseason_candidate_v1",
+  "mode": "offline_fixture_only",
+  "production_write_forbidden": true,
+  "n6_service_integration": "forbidden",
+  "sources": [
+    {
+      "source_kind": "hkjc_pp_list",
+      "source_url": "https://racing.hkjc.com/racing/english/racing-info/ppo_performance_current.asp",
+      "retrieved_at_utc": "REPLACE_WITH_CAPTURE_TIME",
+      "local_relative_path": "runtime/preseason_candidate/raw/pp_preimport_official.html",
+      "content_sha256": "REPLACE_AFTER_ARCHIVE"
+    },
+    {
+      "source_kind": "hkjc_barrier_trial",
+      "source_url": "https://racing.hkjc.com/racing/information/english/Horse/Btresult.aspx",
+      "retrieved_at_utc": "REPLACE_WITH_CAPTURE_TIME",
+      "local_relative_path": "runtime/preseason_candidate/raw/hkjc_barrier_trial_2026-08-21.html",
+      "content_sha256": "REPLACE_AFTER_ARCHIVE"
+    }
+  ],
+  "fixture_selection": {
+    "pp_horse_code": "L019",
+    "pp_official_anchor": "ALPHA STRIKE / Commend (AUS)",
+    "trial_date": "2026-08-21",
+    "trial_batch": "Batch 1 - SHA TIN ALL WEATHER TRACK - 1200m",
+    "trial_horse_code": "L428",
+    "trial_official_anchor": "CALA DEI MORI"
+  },
+  "quality_gates": {
+    "official_pp_anchor_required": true,
+    "official_trial_source_required": true,
+    "source_hash_required": true,
+    "offline_parser_only": true,
+    "target_start_utc_required_for_live_snapshot": true,
+    "on_missing_or_ambiguous": "reject_and_mark_unavailable"
+  }
+}
