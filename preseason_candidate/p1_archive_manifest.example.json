@@ -1,0 +1,38 @@
+{
+  "manifest_version": "preseason_p1_archive_manifest_v1",
+  "candidate_schema_version": "n6_preseason_candidate_p1_v1",
+  "mode": "offline_archive_only",
+  "production_write_forbidden": true,
+  "n6_service_integration": "forbidden",
+  "as_of_utc": "YYYY-MM-DDTHH:MM:SSZ",
+  "capture_policy": {
+    "capture_component": "separate_manual_capture_step",
+    "minimum_seconds_between_hkjc_requests": 60,
+    "live_automation_enabled": false,
+    "parser_network_access": false
+  },
+  "sources": [
+    {
+      "source_kind": "hkjc_pp_list",
+      "source_url": "https://racing.hkjc.com/racing/english/racing-info/ppo_performance_current.asp",
+      "retrieved_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+      "local_relative_path": "runtime/preseason_candidate/raw/official_pp_page.html",
+      "content_sha256": "64-character-lowercase-sha256"
+    },
+    {
+      "source_kind": "hkjc_barrier_trial",
+      "source_url": "https://racing.hkjc.com/racing/information/english/Horse/Btresult.aspx?Date=DD/MM/YYYY",
+      "retrieved_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+      "local_relative_path": "runtime/preseason_candidate/raw/official_trial_page.html",
+      "content_sha256": "64-character-lowercase-sha256"
+    }
+  ],
+  "quality_gates": {
+    "all_source_retrieval_times_strictly_before_as_of": true,
+    "all_archived_file_hashes_must_match": true,
+    "identity_requires_hk_code_name_original_name_and_source_country": true,
+    "ambiguous_or_incomplete_rows": "reject_and_record_reason",
+    "trial_metrics": "within_batch_only",
+    "missing_sectionals": "remain_missing"
+  }
+}

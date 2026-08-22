@@ -113,6 +113,7 @@ v102_scheduler_test/
 !preseason_candidate/
 !preseason_candidate/*.py
 !preseason_candidate/*.sql
+!preseason_candidate/*.example.json
 !runtime/
 !runtime/preseason_candidate/
 !runtime/preseason_candidate/manifests/

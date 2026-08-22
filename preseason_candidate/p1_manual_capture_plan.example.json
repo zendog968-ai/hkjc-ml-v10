@@ -1,0 +1,17 @@
+{
+  "capture_plan_version": "preseason_p1_manual_capture_plan_v1",
+  "manual_capture_confirmed": true,
+  "live_automation_enabled": false,
+  "sources": [
+    {
+      "source_kind": "hkjc_pp_list",
+      "source_url": "https://racing.hkjc.com/racing/english/racing-info/ppo_performance_current.asp",
+      "archive_filename": "pp_YYYYMMDDTHHMMSSZ.html"
+    },
+    {
+      "source_kind": "hkjc_barrier_trial",
+      "source_url": "https://racing.hkjc.com/racing/information/english/Horse/Btresult.aspx?Date=DD/MM/YYYY",
+      "archive_filename": "trial_YYYYMMDD.html"
+    }
+  ]
+}
