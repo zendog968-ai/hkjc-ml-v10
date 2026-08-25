@@ -1,0 +1,18 @@
+[Unit]
+Description=HKJC V10 candidate-only T-15/T-5 pre-race snapshot capture
+ConditionPathExists=/home/ubuntu/hkjc_v10_database/runtime/pre_race_snapshot_candidate/candidate_pre_race_schedule_current.json
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/hkjc_v10_database
+Environment=TZ=Asia/Hong_Kong
+ExecStart=/home/ubuntu/hkjc_v10_database/.venv/bin/python /home/ubuntu/hkjc_v10_database/candidate_prerace_snapshot_scheduler.py --config /home/ubuntu/hkjc_v10_database/runtime/pre_race_snapshot_candidate/candidate_pre_race_schedule_current.json --project-dir /home/ubuntu/hkjc_v10_database --candidate-root /home/ubuntu/hkjc_v10_database/runtime/pre_race_snapshot_candidate --state-file /home/ubuntu/hkjc_v10_database/runtime/pre_race_snapshot_candidate/state.json --report /home/ubuntu/hkjc_v10_database/runtime/pre_race_snapshot_candidate/latest_scheduler_report.json
+StandardOutput=append:/home/ubuntu/hkjc_v10_database/archive/pre_race_snapshot_candidate_logs/timer.log
+StandardError=append:/home/ubuntu/hkjc_v10_database/archive/pre_race_snapshot_candidate_logs/timer.log
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077

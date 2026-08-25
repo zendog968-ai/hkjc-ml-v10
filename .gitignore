@@ -125,3 +125,12 @@ v102_scheduler_test/
 !pre_race_snapshot_coverage.py
 !candidate_uncertainty_sidecar.py
 !pre_race_snapshot_capture_plan.example.json
+
+# Versioned candidate pre-race capture source and deployment templates.
+# Live schedules, raw official pages, snapshots, candidate SQLite and reports stay under runtime/.
+!candidate_prerace_snapshot_scheduler.py
+!candidate_pre_race_schedule.example.json
+!deploy/
+!deploy/hkjc_v10_smtp_dispatch.py
+!deploy/hkjc-candidate-prerace-snapshot.service
+!deploy/hkjc-candidate-prerace-snapshot.timer

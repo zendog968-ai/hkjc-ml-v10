@@ -9,6 +9,7 @@ null odds rather than a malformed file or an exception that blocks predict.py.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -138,7 +139,9 @@ def fetch_rendered_public_page(url: str, timeout_seconds: int) -> str:
             browser = playwright.chromium.launch(executable_path="/usr/bin/chromium", headless=True, args=["--no-sandbox"])
             try:
                 page = browser.new_page(locale="zh-HK", user_agent="Mozilla/5.0 (V10.1 research helper; public odds reader)")
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
+                response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
+                if response is not None and response.status in {403, 429}:
+                    raise RuntimeError(f"HKJC HTTP {response.status}; immediate stop required")
                 # A table is sufficient; odds values may legitimately be temporarily blank.
                 page.wait_for_function(
                     """() => Array.from(document.querySelectorAll('table')).some(
@@ -174,6 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-interval", type=int, default=DEFAULT_MIN_INTERVAL_SECONDS, help="兩次公開頁請求最短間隔秒數")
     parser.add_argument("--state-file", default=".hkjc_live_odds_state.json", help="限速狀態檔路徑")
     parser.add_argument("--html", help="離線測試 HTML；指定時不發送網絡請求")
+    parser.add_argument("--raw-html-output", help="可選：封存原始公開賠率頁HTML並記錄SHA-256")
     parser.add_argument("--snapshot-output", help="V10.2 可選：保存帶時間與場次標籤的雙市場賠率快照 JSON")
     parser.add_argument("--snapshot-label", default="", help="V10.2 快照標籤，例如 T_MINUS_15 或 T_MINUS_5")
     parser.add_argument("--race-date", help="V10.2 快照賽日 YYYY/MM/DD；只供審計")
@@ -190,6 +194,7 @@ def main() -> int:
     warnings: list[str] = []
     table_info: dict[str, Any] = {"table_rows": 0, "rows_parsed": 0, "scratched_horses": [], "missing_win_odds": [], "missing_place_odds": []}
     parsed: dict[str, dict[str, float | None]] = {}
+    raw_html_archive: dict[str, str] | None = None
     try:
         if args.html:
             html = Path(args.html).read_text(encoding="utf-8")
@@ -199,6 +204,12 @@ def main() -> int:
             # Record the attempted request too, preventing rapid retries after timeout/error.
             atomic_json_write(state_path, {"last_request_epoch": time.time(), "url": args.url})
             html = fetch_rendered_public_page(args.url, args.timeout)
+        if args.raw_html_output:
+            raw_target = Path(args.raw_html_output)
+            raw_target.parent.mkdir(parents=True, exist_ok=True)
+            raw_bytes = html.encode("utf-8")
+            raw_target.write_bytes(raw_bytes)
+            raw_html_archive = {"path": str(raw_target), "sha256": hashlib.sha256(raw_bytes).hexdigest()}
         parsed, table_info = parse_visible_odds_table(html)
     except (RuntimeError, ValueError, OSError, json.JSONDecodeError) as exc:
         warnings.append(f"賠率來源暫不可用：{exc}；已輸出 null 覆蓋檔，predict.py 可繼續執行。")
@@ -220,6 +231,7 @@ def main() -> int:
         "status": "complete" if not warnings and not unmatched and available_pairs == len(selected) else "degraded",
         "source_mode": source_mode,
         "source_url": args.url if not args.html else str(Path(args.html).resolve()),
+        "raw_html_archive": raw_html_archive,
         "fetched_at_utc": requested_at,
         "odds_types": ["WIN", "PLA"],
         "odds_definition": {
@@ -249,6 +261,9 @@ def main() -> int:
             "status": metadata["status"],
             "odds": selected,
             "metadata_file": str(Path(args.metadata_output)),
+            "source_url": metadata["source_url"],
+            "source_mode": source_mode,
+            "raw_html_archive": raw_html_archive,
         }
         atomic_json_write(Path(args.snapshot_output), snapshot)
         metadata["snapshot_output"] = str(Path(args.snapshot_output))

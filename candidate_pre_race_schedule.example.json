@@ -1,0 +1,33 @@
+{
+  "schema_version": "v1_candidate_prerace_snapshot_schedule",
+  "enabled": false,
+  "approval": {
+    "approved_by": "replace_with_named_approver",
+    "approved_at_utc": "YYYY-MM-DDTHH:MM:SS+00:00",
+    "scope": "candidate-only T-15/T-5 official snapshot capture; no V10/N6 prediction or training"
+  },
+  "fixture_source": {
+    "official_url": "https://racing.hkjc.com/zh-hk/local/information/fixture",
+    "retrieved_at_utc": "YYYY-MM-DDTHH:MM:SS+00:00",
+    "raw_html_path": "runtime/pre_race_snapshot_candidate/raw/fixture_YYYYMMDD.html",
+    "sha256": "replace_with_sha256_of_archived_official_fixture_page"
+  },
+  "meeting": {
+    "race_date": "YYYY/MM/DD",
+    "racecourse": "ST",
+    "race_start_times": {
+      "1": "HH:MM"
+    }
+  },
+  "racecard_capture_minutes_before": 20,
+  "minimum_request_interval_seconds": 60,
+  "stop_policy": {
+    "on_http_403_or_429": "stop_entire_meeting_and_send_fixed_email_alert",
+    "on_incomplete_snapshot": "reject_from_candidate_archive_without_inference_or_training"
+  },
+  "production_contract": {
+    "v10_probability_ev_kelly_modified": false,
+    "n6_model_or_contract_modified": false,
+    "automatic_training_enabled": false
+  }
+}

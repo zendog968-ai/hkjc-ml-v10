@@ -8,9 +8,11 @@ as an overlay JSON because their page is dynamic and changes continuously.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -100,7 +102,14 @@ def parse_odds_overlay(path: Optional[str]) -> dict[str, float]:
     return {str(key): float(value) for key, value in payload.items() if value not in (None, "")}
 
 
-def fetch(date: str, racecourse: str, race_no: int, output: str, odds_overlay: Optional[str] = None) -> dict[str, Any]:
+def fetch(
+    date: str,
+    racecourse: str,
+    race_no: int,
+    output: str,
+    odds_overlay: Optional[str] = None,
+    raw_html_output: Optional[str] = None,
+) -> dict[str, Any]:
     time.sleep(1.5)  # conservative pause before a single public request
     response = requests.get(
         BASE_URL,
@@ -111,6 +120,15 @@ def fetch(date: str, racecourse: str, race_no: int, output: str, odds_overlay: O
     if response.status_code in {403, 429}:
         raise RuntimeError(f"HKJC 回傳 HTTP {response.status_code}；已停止，請稍後重試。")
     response.raise_for_status()
+    fetched_at_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    raw_html = response.content
+    raw_sha256 = hashlib.sha256(raw_html).hexdigest()
+    raw_path: str | None = None
+    if raw_html_output:
+        raw_target = Path(raw_html_output)
+        raw_target.parent.mkdir(parents=True, exist_ok=True)
+        raw_target.write_bytes(raw_html)
+        raw_path = str(raw_target)
     soup = BeautifulSoup(response.text, "html.parser")
     table = find_table(soup)
     if table is None:
@@ -155,7 +173,16 @@ def fetch(date: str, racecourse: str, race_no: int, output: str, odds_overlay: O
     if race["distance_m"] is None:
         raise ValueError("未能從官方頁解析路程。")
     race.update({"racecourse": racecourse.upper(), "race_date": date, "race_no": race_no})
-    payload = {"race": race, "runners": sorted(runners, key=lambda row: row["horse_no"])}
+    payload = {
+        "race": race,
+        "runners": sorted(runners, key=lambda row: row["horse_no"]),
+        "source": {
+            "url": response.url,
+            "fetched_at_utc": fetched_at_utc,
+            "raw_html_sha256": raw_sha256,
+            "raw_html_path": raw_path,
+        },
+    }
     Path(output).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
 
@@ -167,8 +194,9 @@ def main() -> int:
     parser.add_argument("--race-no", required=True, type=int)
     parser.add_argument("--output", default="race_card.json")
     parser.add_argument("--odds-overlay", help="可選 JSON：{馬名: HKJC獨贏賠率}，供 EV 比較使用")
+    parser.add_argument("--raw-html-output", help="可選：封存原始官方排位表HTML；不影響既有JSON介面")
     args = parser.parse_args()
-    result = fetch(args.date, args.racecourse, args.race_no, args.output, args.odds_overlay)
+    result = fetch(args.date, args.racecourse, args.race_no, args.output, args.odds_overlay, args.raw_html_output)
     print(json.dumps({"race": result["race"], "runner_count": len(result["runners"])}, ensure_ascii=False, indent=2))
     return 0
 
