@@ -1,0 +1,37 @@
+{
+  "schema_version": "v1",
+  "purpose": "Candidate-only T-15/T-5 pre-race snapshot coverage accumulation",
+  "automatic_capture_enabled": false,
+  "production_contract": {
+    "v10_probability_ev_kelly_modified": false,
+    "n6_model_or_contract_modified": false,
+    "overseas_races_supported": false
+  },
+  "approval_required_per_capture": true,
+  "source_policy": {
+    "allowed_host": "racing.hkjc.com",
+    "minimum_seconds_between_hkjc_requests": 60,
+    "on_http_403_or_429": "stop_immediately_without_bypass",
+    "archive_before_import": true,
+    "required_fields": [
+      "official_source_url",
+      "captured_at_utc",
+      "race_identity",
+      "snapshot_label",
+      "payload_sha256",
+      "raw_payload_path"
+    ]
+  },
+  "candidate_archive": {
+    "sqlite_path": "runtime/pre_race_snapshot_candidate/pre_race_odds_snapshots.sqlite",
+    "coverage_report": "runtime/pre_race_snapshot_candidate/coverage.json",
+    "training_gate": {
+      "minimum_complete_races": 150,
+      "requires_both_t_minus_15_and_t_minus_5": true,
+      "requires_t_minus_15_before_t_minus_5": true,
+      "requires_official_results_join": true,
+      "requires_expanding_window_evaluation": true
+    }
+  },
+  "capture_requests": []
+}

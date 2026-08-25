@@ -117,3 +117,11 @@ v102_scheduler_test/
 !runtime/preseason_candidate/
 !runtime/preseason_candidate/manifests/
 !runtime/preseason_candidate/manifests/*.example.json
+
+# Versioned V10 first-phase candidate strengthening source and static capture contract.
+# Generated manifests, candidate archives, coverage reports and sidecars remain under runtime/.
+!training_provenance.py
+!run_weekly_model_update_with_retry.sh
+!pre_race_snapshot_coverage.py
+!candidate_uncertainty_sidecar.py
+!pre_race_snapshot_capture_plan.example.json
