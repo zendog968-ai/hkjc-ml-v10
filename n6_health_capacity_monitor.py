@@ -49,13 +49,31 @@ def _summary(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
-def _request_json(url: str, method: str, timeout_seconds: float) -> tuple[int, float, dict[str, Any]]:
+def _request_json(url: str, method: str, timeout_seconds: float) -> tuple[int, float, dict[str, Any], dict[str, str]]:
     started = time.perf_counter()
     request = urllib.request.Request(url, data=b"" if method == "POST" else None, method=method)
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310: fixed loopback URL
         payload = json.loads(response.read().decode("utf-8"))
         status = int(response.status)
-    return status, (time.perf_counter() - started) * 1000.0, payload
+        headers = {key.lower(): value for key, value in response.headers.items()}
+    return status, (time.perf_counter() - started) * 1000.0, payload, headers
+
+
+def _parse_server_timing(header: str | None) -> dict[str, float]:
+    """Parse only N6 aggregate Server-Timing durations; ignore all other values."""
+    values: dict[str, float] = {}
+    for item in (header or "").split(","):
+        name, _, remainder = item.strip().partition(";")
+        if not name.startswith("n6_"):
+            continue
+        for parameter in remainder.split(";"):
+            key, separator, raw = parameter.strip().partition("=")
+            if key == "dur" and separator:
+                try:
+                    values[name.removeprefix("n6_")] = float(raw)
+                except ValueError:
+                    pass
+    return values
 
 
 def _service_properties() -> dict[str, str]:
@@ -135,11 +153,26 @@ def _run_probe(url: str, method: str, attempts: int, timeout_seconds: float) -> 
     latencies: list[float] = []
     statuses: list[int | str] = []
     errors: list[str] = []
-    for _ in range(attempts):
+    worker_counts: dict[str, int] = {}
+    segment_values: dict[str, list[float]] = {}
+    observations: list[dict[str, Any]] = []
+    for sequence in range(1, attempts + 1):
         try:
-            status, latency_ms, _payload = _request_json(url, method, timeout_seconds)
+            status, latency_ms, _payload, headers = _request_json(url, method, timeout_seconds)
             statuses.append(status)
             latencies.append(latency_ms)
+            worker_pid = headers.get("x-n6-worker-pid")
+            if worker_pid:
+                worker_counts[worker_pid] = worker_counts.get(worker_pid, 0) + 1
+            segments = _parse_server_timing(headers.get("server-timing"))
+            for name, duration_ms in segments.items():
+                segment_values.setdefault(name, []).append(duration_ms)
+            observations.append({
+                "sequence": sequence,
+                "client_latency_ms": round(latency_ms, 3),
+                "worker_pid": worker_pid,
+                "segments_ms": {name: round(value, 3) for name, value in sorted(segments.items())},
+            })
         except urllib.error.HTTPError as error:
             statuses.append(error.code)
             errors.append(f"http_{error.code}")
@@ -152,6 +185,9 @@ def _run_probe(url: str, method: str, attempts: int, timeout_seconds: float) -> 
         "errors": sorted(set(errors)),
         "latency_samples_ms": [round(value, 3) for value in latencies],
         "latency": _summary(latencies),
+        "worker_request_distribution": dict(sorted(worker_counts.items())),
+        "server_timing_segments_ms": {name: _summary(values) for name, values in sorted(segment_values.items())},
+        "request_observations": observations,
     }
 
 
@@ -197,6 +233,17 @@ def _markdown(report: dict[str, Any]) -> str:
         f"| p95（ms） | {health['latency']['p95_ms']} | {infer['latency']['p95_ms']} |",
         f"| p99（ms） | {health['latency']['p99_ms']} | {infer['latency']['p99_ms']} |",
         f"| 最大值（ms） | {health['latency']['max_ms']} | {infer['latency']['max_ms']} |",
+        "",
+        "## 歷史推論分段遙測",
+        "",
+        "| 分段 | p50（ms） | p95（ms） | p99（ms） | 最大值（ms） |",
+        "|---|---:|---:|---:|---:|",
+        *[
+            f"| {name} | {summary['p50_ms']} | {summary['p95_ms']} | {summary['p99_ms']} | {summary['max_ms']} |"
+            for name, summary in infer.get('server_timing_segments_ms', {}).items()
+        ],
+        "",
+        f"- Worker探針分佈：`{infer.get('worker_request_distribution', {})}`",
         "",
         "## 服務與容量",
         "",
@@ -252,6 +299,8 @@ def main() -> int:
             "target": "labelled_historical_race",
             "race": {"race_date": race_date, "racecourse": racecourse, "race_no": race_no, "runner_count": runner_count},
             "real_traffic_telemetry": False,
+            "aggregate_server_timing_captured": True,
+            "worker_pid_captured_for_loopback_distribution_only": True,
             "writes_performed_to_v10_or_n6": 0,
             "service_configuration_changed": False,
         },
