@@ -1,0 +1,42 @@
+[Unit]
+Description=N6 read-only daily health and capacity report
+Documentation=file:///home/ubuntu/hkjc_v10_database/n6_health_capacity_monitor.py
+Wants=n6-engine.service
+After=n6-engine.service
+ConditionPathExists=/home/ubuntu/hkjc_v10_database/n6_health_capacity_monitor.py
+ConditionPathExists=/home/ubuntu/n6_engine/reports/n6_test_predictions.csv
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/hkjc_v10_database
+ExecCondition=/usr/bin/systemctl is-active --quiet n6-engine.service
+ExecStart=/usr/bin/flock -n /home/ubuntu/hkjc_v10_database/runtime/n6_health_reports/.n6-health-capacity-monitor.lock /home/ubuntu/hkjc_v10_database/.venv/bin/python /home/ubuntu/hkjc_v10_database/n6_health_capacity_monitor.py --attempts 20 --health-attempts 8
+TimeoutStartSec=90
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/home/ubuntu/hkjc_v10_database/runtime/n6_health_reports
+
+[Install]
+WantedBy=multi-user.target

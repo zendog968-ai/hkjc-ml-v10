@@ -134,3 +134,7 @@ v102_scheduler_test/
 !deploy/hkjc_v10_smtp_dispatch.py
 !deploy/hkjc-candidate-prerace-snapshot.service
 !deploy/hkjc-candidate-prerace-snapshot.timer
+
+# Versioned N6 health-monitor deployment templates; all generated reports remain runtime-only.
+!deploy/n6-health-capacity.service
+!deploy/n6-health-capacity.timer

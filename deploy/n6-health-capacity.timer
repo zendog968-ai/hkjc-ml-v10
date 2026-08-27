@@ -1,0 +1,11 @@
+[Unit]
+Description=Run N6 read-only daily health and capacity report
+
+[Timer]
+OnCalendar=*-*-* 00:20:00 Asia/Hong_Kong
+Persistent=true
+RandomizedDelaySec=0
+Unit=n6-health-capacity.service
+
+[Install]
+WantedBy=timers.target
