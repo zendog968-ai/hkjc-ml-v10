@@ -1,0 +1,48 @@
+name: Hong Kong Racing Qualitative Data Auto-Sync
+
+on:
+  schedule:
+    # 每週二、五、六 20:00 HKT (12:00 UTC) 自動觸發
+    - cron: '0 12 * * 2,5,6'
+  workflow_dispatch: # 支援在 GitHub 介面手動按鍵執行
+
+permissions:
+  contents: write # 賦予 GITHUB_TOKEN 推送權限
+
+jobs:
+  sync-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Run Racing Data Scraper & Sync Pipeline
+        run: |
+          python sync_racing_pipeline.py
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --staged --quiet; then
+            echo "No changes in data directory to commit."
+          else
+            git commit -m "chore(data): auto-sync racing qualitative data [skip ci]"
+            git pull --rebase origin main || true
+            git push origin main
+          fi
