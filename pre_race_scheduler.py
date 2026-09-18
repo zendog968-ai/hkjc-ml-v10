@@ -118,6 +118,9 @@ def script_paths(project_dir: Path) -> dict[str, Path]:
         "filter": "filter_high_probability.py",
         "new_horse": "enrich_hkjc_new_horse_priors.py",
         "double_trio": "fetch_hkjc_double_trio.py",
+        "safety": "runtime/p0_safety_gate.py",
+        "tips": "generate_actionable_tips_p0.py",
+        "shadow": "runtime/shadow_features_logger.py",
     }
     paths = {key: project_dir / name for key, name in names.items()}
     missing = [path.name for key, path in paths.items() if key != "new_horse" and not path.exists()]
@@ -206,6 +209,18 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
     odds_command = [python, str(paths["odds"]), "--race-card", str(card), "--output", str(win), "--place-output", str(place), "--combined-output", str(combined), "--metadata-output", str(meta), "--snapshot-output", str(snapshot), "--snapshot-label", f"T_MINUS_{offset}", "--race-date", job.date, "--racecourse", job.racecourse, "--race-no", str(job.race_no), "--min-interval", str(odds_min_interval), "--state-file", str(output_root / "live_odds_rate_limit_state.json")]
     result = run_command(odds_command, output_dir, f"odds_t_minus_{offset}", 90); outcomes.append(result)
     if result["returncode"]: return {"status": "failed", "failed_step": "odds", "output_dir": str(output_dir), "steps": outcomes}
+    odds_meta = load_json(meta, {})
+    field_size = len(load_json(card, {}).get("runners", []))
+    complete_pairs = odds_meta.get("complete_win_place_pairs")
+    odds_complete = odds_meta.get("status") == "complete" and field_size > 0 and complete_pairs == field_size
+    if offset == min(DEFAULT_SNAPSHOT_MINUTES) and not odds_complete:
+        return {"status": "failed", "failed_step": "odds_alignment_gate", "odds_status": odds_meta.get("status", "unknown"), "complete_win_place_pairs": complete_pairs, "field_size": field_size, "output_dir": str(output_dir), "steps": outcomes}
+    if offset == min(DEFAULT_SNAPSHOT_MINUTES):
+        pre_gate = output_dir / "p0_pre_odds_gate.json"
+        gate_result = run_command([python, str(paths["safety"]), "--phase", "pre", "--card", str(card), "--meta", str(meta), "--date", job.date, "--course", job.racecourse, "--race-no", str(job.race_no), "--output", str(pre_gate)], output_dir, "p0_pre_odds_gate", 30)
+        outcomes.append(gate_result)
+        if gate_result["returncode"]:
+            return {"status": "failed", "failed_step": "p0_pre_odds_gate", "output_dir": str(output_dir), "steps": outcomes}
     # Only the final (T-5) stage runs prediction / report. It tolerates a missing T-15 snapshot.
     if offset == min(DEFAULT_SNAPSHOT_MINUTES):
         prediction, csv_file = output_dir / "prediction.json", output_dir / "prediction.csv"
@@ -213,10 +228,14 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
         commands = [
             ("predict", [python, str(paths["predict"]), "--db", str(project_dir / "hkjc_last_season.sqlite"), "--model", str(project_dir / "horse_model.pkl"), "--race-card", str(card), "--win-odds-overlay", str(win), "--place-odds-overlay", str(place), "--odds-snapshot-early", str(early), "--odds-snapshot-late", str(snapshot), "--output-json", str(prediction), "--output-csv", str(csv_file)], 180),
             ("filter", [python, str(paths["filter"]), "--prediction", str(prediction), "--output", str(filtered), "--markdown-output", str(markdown)], 60),
+            ("p0_post_safety", [python, str(paths["safety"]), "--phase", "post", "--card", str(card), "--meta", str(meta), "--prediction", str(prediction), "--date", job.date, "--course", job.racecourse, "--race-no", str(job.race_no), "--output", str(output_dir / "p0_safety_gate.json")], 30),
+            ("actionable_tips", [python, str(paths["tips"]), str(prediction), "--label", f"{job.racecourse}-R{job.race_no:02d}", "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(output_dir / "actionable_tips.txt")], 60),
+            ("shadow_logger", [python, str(paths["shadow"]), "--race-card", str(card), "--prediction", str(prediction), "--odds-snapshot", str(snapshot), "--odds-meta", str(meta), "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(project_dir / "runtime/shadow_inference_log.csv")], 10),
         ]
         for name, command, timeout in commands:
             result = run_command(command, output_dir, name, timeout); outcomes.append(result)
-            if result["returncode"]: return {"status": "failed", "failed_step": name, "output_dir": str(output_dir), "steps": outcomes}
+            if result["returncode"] and name != "shadow_logger": return {"status": "failed", "failed_step": name, "output_dir": str(output_dir), "steps": outcomes}
+        safety_payload = load_json(output_dir / "p0_safety_gate.json", {})
         payload = load_json(filtered, {})
         provenance_path = output_dir / "v103_snapshot_provenance.json"
         atomic_write_json(provenance_path, {
@@ -234,8 +253,14 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
             "prediction_path": str(prediction),
             "prediction_sha256": sha256_file(prediction),
             "post_race_labels_included": False,
+            "race_card_sha256": sha256_file(card),
+            "odds_meta_sha256": sha256_file(meta),
+            "odds_snapshot_sha256": sha256_file(snapshot),
+            "p0_safety_gate_path": str(output_dir / "p0_safety_gate.json"),
+            "p0_safety_status": safety_payload.get("status"),
+            "shadow_log_path": str(project_dir / "runtime/shadow_inference_log.csv"),
         })
-        return {"status": "completed", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "steps": outcomes, "selection_count": payload.get("selection_count", 0), "markdown_report": str(markdown), "whatsapp_direct_link": (payload.get("whatsapp") or {}).get("direct_link"), "odds_status": load_json(meta, {}).get("status", "unknown"), "v103_snapshot_provenance": str(provenance_path)}
+        return {"status": "completed", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "steps": outcomes, "selection_count": payload.get("selection_count", 0), "markdown_report": str(markdown), "whatsapp_direct_link": (payload.get("whatsapp") or {}).get("direct_link"), "odds_status": load_json(meta, {}).get("status", "unknown"), "p0_safety_status": safety_payload.get("status"), "p0_safety_gate": str(output_dir / "p0_safety_gate.json"), "v103_snapshot_provenance": str(provenance_path)}
     return {"status": "snapshot_collected", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "snapshot": str(snapshot), "steps": outcomes, "odds_status": load_json(meta, {}).get("status", "unknown")}
 
 

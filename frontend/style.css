@@ -492,3 +492,81 @@ body {
 .overseas-backtest .table {
   font-size: .86rem;
 }
+
+.prediction-tabs-wrap { background: #fbfdff; }
+.prediction-tabs { scrollbar-width: thin; }
+.prediction-tabs .nav-link {
+  flex: 0 0 auto;
+  min-height: 2.75rem;
+  padding: .65rem .9rem;
+  border: 1px solid #dbe5ef;
+  color: #334155;
+  background: #fff;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.prediction-tabs .nav-link.active { color: #fff; background: #1d4ed8; border-color: #1d4ed8; }
+.smart-money-badge { color: #7c2d12; background: #ffedd5; border: 1px solid #fdba74; }
+.stable-flag-badge { color: #065f46; background: #d1fae5; border: 1px solid #6ee7b7; }
+.odds-drift-down { color: #b91c1c; font-weight: 700; }
+@media (max-width: 575.98px) {
+  .prediction-tabs-wrap { padding-left: .75rem !important; padding-right: .75rem !important; }
+  .prediction-tabs .nav-link { min-height: 3rem; padding: .75rem .85rem; font-size: .88rem; }
+  .prediction-table { min-width: 680px; }
+}
+
+.daily-toolbar { align-items: stretch; }
+.daily-tool-button { min-height: 2.75rem; font-weight: 700; }
+.daily-aggregation-modal { border: 1px solid var(--line); }
+.daily-aggregation-modal .modal-header { background: #f8fbff; }
+.daily-empty-state { padding: 1.1rem; color: #475569; background: #f8fafc; border: 1px dashed #cbd5e1; }
+.daily-value-table th { white-space: nowrap; }
+.daily-double-trio-event { padding: 1rem 0; border-top: 1px solid var(--line); }
+.daily-double-trio-event:first-of-type { border-top: 0; padding-top: 0; }
+.daily-double-trio-leg { height: 100%; padding: .8rem; background: #f8fafc; border: 1px solid #dbe5ef; }
+.daily-horse-chip { display: inline-block; margin: 0 .35rem .35rem 0; padding: .3rem .45rem; color: #0f4c5c; background: #e6fffb; border: 1px solid #b9d9d4; font-size: .82rem; }
+@media (max-width: 575.98px) {
+  .daily-toolbar { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .5rem !important; }
+  .daily-tool-button { min-height: 3rem; padding: .5rem .55rem; font-size: .84rem; white-space: normal; }
+  .modal-fullscreen-sm-down .modal-header { padding: .9rem 1rem; }
+  .modal-fullscreen-sm-down .modal-body { padding: 1rem; }
+  .daily-value-table { min-width: 650px; }
+}
+
+.defensive-badges { display: flex; flex-wrap: wrap; gap: .35rem; }
+.defensive-badge { padding: .34rem .5rem; font-size: .72rem; font-weight: 700; line-height: 1.25; white-space: normal; }
+.defensive-scratch { color: #075b34; background: #d1fae5; border: 1px solid #6ee7b7; }
+.defensive-jockey { color: #7a4a00; background: #fef3c7; border: 1px solid #fcd34d; }
+.defensive-track { color: #475569; background: #f1f5f9; border: 1px solid #cbd5e1; }
+.brier-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.brier-summary > div { padding: .8rem; background: #f8fafc; border: 1px solid #dbe5ef; }
+.brier-summary small, .brier-summary strong { display: block; }
+.brier-summary strong { margin-top: .2rem; color: var(--ink); font-size: 1.15rem; }
+.audit-aligned { color: #075b34; background: #d1fae5; border: 1px solid #6ee7b7; }
+.audit-misaligned { color: #8a1c1c; background: #fee2e2; border: 1px solid #fca5a5; }
+.brier-audit-table th { white-space: nowrap; }
+@media (max-width: 575.98px) {
+  .daily-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .defensive-badge { max-width: 100%; font-size: .68rem; }
+  .brier-summary { gap: .5rem; }
+  .brier-summary > div { padding: .7rem; }
+  .brier-audit-table { min-width: 550px; }
+}
+
+.actionable-tips-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: .9rem;
+  line-height: 1.55;
+  background: rgba(13, 110, 253, .04);
+  border: 1px solid rgba(13, 110, 253, .18);
+  border-radius: .5rem;
+  padding: .75rem;
+}
+
+@media (max-width: 575.98px) {
+  .actionable-tips .btn { width: 100%; }
+  .actionable-tips-text { font-size: .84rem; }
+}
+

@@ -574,21 +574,42 @@ def crawl_meetings(
     logging.info("抓取結束：新增／更新 %s 場（其中取消／無效 %s 場）；略過已存在 %s 場。", completed, cancelled, skipped)
 
 
-def export_csv(db: sqlite3.Connection, csv_path: Path) -> int:
-    query = """
+def export_csv(
+    db: sqlite3.Connection,
+    csv_path: Path,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    racecourse: str | None = None,
+) -> int:
+    """Export only the requested crawl window; never leak full-history rows into a daily file."""
+    clauses: list[str] = []
+    params: list[str] = []
+    if start_date:
+        clauses.append("s.race_date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("s.race_date <= ?")
+        params.append(end_date)
+    if racecourse:
+        clauses.append("s.racecourse = ?")
+        params.append(racecourse.upper())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    query = f"""
     SELECT
       s.race_date, s.racecourse, s.race_no, r.race_id, r.race_name, r.race_class,
       r.distance_m, r.surface, r.course_config, r.going, r.official_time AS race_official_time,
       s.horse_no, s.horse_name, s.horse_code, s.finish_pos_text, s.finish_pos,
+      CASE WHEN s.finish_pos BETWEEN 1 AND 3 THEN 1 ELSE 0 END AS is_top3,
       s.jockey, s.trainer, s.weight_lbs, s.declared_weight_kg, s.draw,
       s.margin_text, s.margin_lengths, s.running_positions, s.finish_time, s.win_odds,
       r.race_status, r.source_url
     FROM starters AS s
     JOIN races AS r
       ON r.race_date=s.race_date AND r.racecourse=s.racecourse AND r.race_no=s.race_no
+    {where}
     ORDER BY s.race_date, s.racecourse, s.race_no, COALESCE(s.finish_pos, 999), s.horse_no
     """
-    cursor = db.execute(query)
+    cursor = db.execute(query, params)
     columns = [column[0] for column in cursor.description]
     rows = cursor.fetchall()
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -666,7 +687,18 @@ def main() -> int:
                 print(f"{meeting.race_date},{meeting.racecourse},{meeting.scheduled_races}")
             return 0
         crawl_meetings(client, db, meetings, args.max_meetings, args.force)
-        record_count = export_csv(db, csv_path)
+        racecourse_filter = None
+        if meetings:
+            racecourses = {meeting.racecourse for meeting in meetings}
+            if len(racecourses) == 1:
+                racecourse_filter = next(iter(racecourses))
+        record_count = export_csv(
+            db,
+            csv_path,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            racecourse=racecourse_filter,
+        )
         logging.info("已輸出 CSV：%s（%s 行馬匹出賽紀錄）。", csv_path, record_count)
         print_summary(db)
         return 0

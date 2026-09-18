@@ -21,11 +21,13 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from double_trio_strategy import build_meeting_strategies
 from n6_integration import enrich_prediction
+from readonly_display_enricher import enrich_prediction_for_display
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = Path(os.getenv("HKJC_RUNTIME_ROOT", str(PROJECT_ROOT / "runtime" / "pre_race"))).expanduser().resolve()
+POST_RACE_ROOT = Path(os.getenv("HKJC_POST_RACE_ROOT", str(PROJECT_ROOT / "runtime" / "post_race"))).expanduser().resolve()
 MAX_JSON_BYTES = 10 * 1024 * 1024
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 COURSES = {"ST", "HV"}
@@ -332,6 +334,60 @@ async def races_for_date(date: str = ApiPath(..., description="賽日，YYYY-MM-
     return {"date": requested_date.isoformat(), "count": len(races), "races": races}
 
 
+@app.get("/api/post-race-audit/{date}/{course}", tags=["post-race"])
+async def post_race_audit(
+    date: str = ApiPath(..., description="賽日，YYYY-MM-DD"),
+    course: str = ApiPath(..., description="ST 或 HV"),
+) -> JSONResponse:
+    parsed_date = parse_iso_date(date)
+    normalized_course = normalize_course(course)
+    path = POST_RACE_ROOT / f"{parsed_date:%Y/%m/%d}/brier_audit.json"
+    try:
+        path.resolve().relative_to(POST_RACE_ROOT)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="找不到指定賽後審計報告。") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="找不到指定賽後審計報告。")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=404, detail="賽後審計報告無法讀取。") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="賽後審計報告格式無效。")
+    payload = dict(payload)
+    payload.setdefault("racecourse", normalized_course)
+    return JSONResponse(payload)
+
+
+@app.get("/api/model-diagnostics/{date}/{course}", tags=["post-race"])
+async def model_diagnostics(
+    date: str = ApiPath(..., description="賽日，YYYY-MM-DD"),
+    course: str = ApiPath(..., description="ST 或 HV"),
+) -> JSONResponse:
+    """Read the fixed, read-only post-race model diagnostic report."""
+    parsed_date = parse_iso_date(date)
+    normalized_course = normalize_course(course)
+    path = POST_RACE_ROOT / f"{parsed_date:%Y/%m/%d}/model_diagnostics.json"
+    try:
+        path.resolve().relative_to(POST_RACE_ROOT)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="找不到指定模型診斷報告。") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="找不到指定模型診斷報告。")
+    try:
+        if path.stat().st_size > MAX_REPORT_BYTES:
+            raise ValueError("模型診斷報告超出安全讀取上限")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="模型診斷報告無法讀取。") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="模型診斷報告格式無效。")
+    payload = dict(payload)
+    payload.setdefault("racecourse", normalized_course)
+    payload["read_only"] = True
+    return JSONResponse(payload)
+
+
 @app.get("/api/prediction/{date}/{course}/{race_no}", tags=["predictions"])
 async def prediction_for_race(
     date: str = ApiPath(..., description="賽日，YYYY-MM-DD"),
@@ -356,6 +412,8 @@ async def prediction_for_race(
             "message": "N6 輔助服務暫不可用；V10 原有分析維持不變。",
             "notice": "未改寫 V10 已保存的勝率、EV、Kelly 或既有風險提示。",
         }
+    # Display-only copy: prediction.json remains byte-for-byte untouched.
+    enriched_prediction = enrich_prediction_for_display(enriched_prediction)
     filter_path = job_dir / "high_probability_filter.json"
     return {
         "date": requested_date.isoformat(),

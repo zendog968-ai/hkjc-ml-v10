@@ -40,7 +40,18 @@
                 <span class="spinner-border spinner-border-sm d-none" aria-hidden="true"></span>
               </button>
             </div>
-            <p class="form-text mb-0 mt-2">只會列出已成功生成 <code>prediction.json</code> 的場次。</p>
+            <div class="daily-toolbar d-flex flex-wrap gap-2 mt-3" aria-label="全日唯讀聚合工具">
+              <button id="dailyValueButton" class="btn btn-outline-success daily-tool-button" type="button" disabled>
+                <span class="button-text">全日高 EV 戰報</span><span class="spinner-border spinner-border-sm d-none" aria-hidden="true"></span>
+              </button>
+              <button id="doubleTrioHubButton" class="btn btn-outline-primary daily-tool-button" type="button" disabled>
+                <span class="button-text">雙 T／孖 T 策略矩陣</span><span class="spinner-border spinner-border-sm d-none" aria-hidden="true"></span>
+              </button>
+              <button id="brierAuditButton" class="btn btn-outline-dark daily-tool-button" type="button" disabled>
+                <span class="button-text">賽後 Brier 審計</span><span class="spinner-border spinner-border-sm d-none" aria-hidden="true"></span>
+              </button>
+            </div>
+            <p id="dailyToolbarHint" class="form-text mb-0 mt-2">請先載入賽日；工具只讀取當日已保存的預測及官方孖T工件。</p>
           </div>
         </div>
       </div>
@@ -68,13 +79,22 @@
             <p class="section-kicker mb-1">PREDICTION SNAPSHOT</p>
             <h2 id="predictionHeading" class="h4 mb-0">場內預測</h2>
             <p id="predictionMeta" class="text-secondary small mb-0 mt-1"></p>
+            <div id="defensiveBadges" class="defensive-badges mt-2" aria-live="polite"></div>
             <p id="n6ModelSummary" class="text-secondary small mb-0 mt-1"></p>
           </div>
           <div id="filterSummary" class="text-end small"></div>
         </div>
+        <div class="prediction-tabs-wrap px-3 px-md-4 pt-3" aria-label="單場預測視圖切換">
+          <div id="predictionTabs" class="prediction-tabs nav nav-pills flex-nowrap overflow-auto gap-2" role="tablist">
+            <button type="button" class="nav-link active" data-prediction-tab="summary" role="tab" aria-selected="true">綜合預測</button>
+            <button type="button" class="nav-link" data-prediction-tab="drift" role="tab" aria-selected="false">臨場落飛</button>
+            <button type="button" class="nav-link" data-prediction-tab="kelly" role="tab" aria-selected="false">凱利注碼</button>
+            <button type="button" class="nav-link" data-prediction-tab="qualitative" role="tab" aria-selected="false">晨操質性</button>
+          </div>
+        </div>
         <div class="table-responsive">
           <table class="table table-hover align-middle mb-0 prediction-table">
-            <thead>
+            <thead id="predictionTableHead">
               <tr>
                 <th scope="col">馬號</th>
                 <th scope="col">馬匹</th>
@@ -157,6 +177,19 @@
       <span>資料以賽前自動化已保存工件為準</span>
     </div>
   </footer>
+
+  <div class="modal fade" id="dailyAggregationModal" tabindex="-1" aria-labelledby="dailyAggregationTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable modal-lg modal-fullscreen-sm-down">
+      <div class="modal-content daily-aggregation-modal">
+        <div class="modal-header">
+          <div><p id="dailyAggregationKicker" class="section-kicker mb-1">READ-ONLY DAILY VIEW</p><h2 id="dailyAggregationTitle" class="h5 mb-0">全日工具</h2></div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="關閉"></button>
+        </div>
+        <div id="dailyAggregationContent" class="modal-body" aria-live="polite"></div>
+        <div class="modal-footer py-2"><button type="button" class="btn btn-outline-secondary daily-modal-close" data-bs-dismiss="modal">關閉</button></div>
+      </div>
+    </div>
+  </div>
 
   <div id="notification" class="toast align-items-center border-0 position-fixed bottom-0 end-0 m-3" role="status" aria-live="polite" aria-atomic="true">
     <div class="d-flex">

@@ -19,7 +19,7 @@ from typing import Any, Optional
 import requests
 from bs4 import BeautifulSoup, Tag
 
-BASE_URL = "https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx"
+BASE_URL = "https://racing.hkjc.com/zh-hk/local/information/racecard"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; HKJCV10Research/1.1; public-data-research)",
     "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
@@ -40,16 +40,24 @@ def strip_horse_code(value: str) -> str:
 
 
 def find_table(soup: BeautifulSoup) -> Optional[Tag]:
-    required = ("馬號", "馬名", "騎師", "練馬師", "檔位")
+    required_groups = (("馬號", "馬匹編號"), ("馬名",), ("騎師",), ("練馬師",), ("檔位",), ("負磅",))
+    candidates = []
     for table in soup.find_all("table"):
         text = normalize(table.get_text(" ", strip=True))
-        if all(token in text for token in required):
-            return table
-    return None
-
+        if not all(any(token in text for token in group) for group in required_groups):
+            continue
+        header_cells = []
+        for row in table.find_all("tr")[:8]:
+            header_cells.extend(normalize(c.get_text(" ", strip=True)) for c in row.find_all(["td", "th"], recursive=False))
+        header_blob = " | ".join(header_cells)
+        header_hits = sum(any(token in header_blob for token in group) for group in required_groups)
+        data_rows = sum(1 for row in table.find_all("tr") if len(row.find_all("td", recursive=False)) >= 6)
+        score = header_hits * 100 + min(data_rows, 20) * 3 + len(header_cells) / 1000
+        candidates.append((score, table))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 def header_map(table: Tag) -> dict[str, int]:
-    rows = table.find_all("tr")[:4]
+    rows = table.find_all("tr")[:8]
     best: list[str] = []
     for row in rows:
         cells = [normalize(cell.get_text(" ", strip=True)) for cell in row.find_all(["td", "th"], recursive=False)]
@@ -57,14 +65,14 @@ def header_map(table: Tag) -> dict[str, int]:
             best = cells
     mapping: dict[str, int] = {}
     targets = {
-        "horse_no": "馬號", "horse_name": "馬名", "horse_code": "烙號",
-        "jockey": "騎師", "trainer": "練馬師", "weight_lbs": "負磅", "draw": "檔位",
-        "equipment": "配備", "horse_body_weight_lbs": "排位體重",
-        "official_body_weight_delta_lbs": "排位體重+/-",
+        "horse_no": ("馬號", "馬匹編號"), "horse_name": ("馬名",), "horse_code": ("烙號",),
+        "jockey": ("騎師",), "trainer": ("練馬師",), "weight_lbs": ("負磅",), "draw": ("檔位",),
+        "equipment": ("配備",), "horse_body_weight_lbs": ("排位體重",),
+        "official_body_weight_delta_lbs": ("排位體重+/-",),
     }
-    for field, token in targets.items():
+    for field, tokens in targets.items():
         for index, label in enumerate(best):
-            if token in label:
+            if any(token in label for token in (tokens if isinstance(tokens, tuple) else (tokens,))):
                 mapping[field] = index
                 break
     return mapping
@@ -72,28 +80,27 @@ def header_map(table: Tag) -> dict[str, int]:
 
 def metadata(soup: BeautifulSoup) -> dict[str, Any]:
     text = normalize(soup.get_text(" ", strip=True))
-    matched = re.search(r"((?:第一|第二|第三|第四|第五)班|新馬賽|一班|二班|三班|四班|五班)[^\-]{0,12}-\s*(\d+)米", text)
-    race_class = normalize(matched.group(1)) if matched else "未知"
-    distance_m = int(matched.group(2)) if matched else None
-    track = ""
-    going = ""
-    for td in soup.find_all("td"):
-        label = normalize(td.get_text(" ", strip=True)).replace(" ", "")
-        sibling = td.find_next_sibling("td")
-        if sibling and label in {"場地狀況:", "場地狀況"}:
-            going = normalize(sibling.get_text(" ", strip=True))
-        if sibling and label in {"賽道:", "賽道"}:
-            track = normalize(sibling.get_text(" ", strip=True))
-    surface = "全天候" if "全天候" in track else "草地" if "草地" in track else "未知"
-    course_match = re.search(r'"([A-Z][+0-9]*)"', track)
-    return {
-        "race_class": race_class,
-        "distance_m": distance_m,
-        "surface": surface,
-        "course_config": course_match.group(1) if course_match else "未知",
-        "going": going or "未知",
-    }
-
+    race_segment_match = re.search(r"第\s*\d+\s*場\s*-\s*.*?(?=獎金:)", text)
+    race_segment = race_segment_match.group(0) if race_segment_match else text
+    prize_match = re.search(r"獎金:.*?(?=設\s*定|我的排位表|馬匹)", text)
+    prize_segment = prize_match.group(0) if prize_match else text
+    race_class = "未知"
+    class_match = re.search(r"第([一二三四五])班|(?<!第)([一二三四五])班", prize_segment)
+    grade_match = re.search(r"([一二三四五])級賽", prize_segment)
+    if class_match:
+        race_class = f"第{class_match.group(1) or class_match.group(2)}班"
+    elif grade_match:
+        race_class = f"{grade_match.group(1)}級賽"
+    elif "特首盃" in race_segment:
+        race_class = "特別賽（特首盃）"
+    distance_match = re.search(r"(?<!\d)(\d{3,4})米", race_segment) or re.search(r"(?<!\d)(\d{3,4})米", text)
+    distance_m = int(distance_match.group(1)) if distance_match else None
+    surface = "草地" if "草地" in race_segment else "全天候" if "全天候" in race_segment else "未知"
+    course_match = re.search(r"[\"「]?([A-Z][+0-9]*)[\"」]?\s*賽道", race_segment)
+    course_config = course_match.group(1) if course_match else "未知"
+    going_match = re.search(r"(好地至黏地|好地|黏地|軟地|濕地|大爛地)", race_segment)
+    going = going_match.group(1) if going_match else None
+    return {"race_class": race_class, "distance_m": distance_m, "surface": surface, "course_config": course_config, "going": going}
 
 def parse_odds_overlay(path: Optional[str]) -> dict[str, float]:
     if not path:
@@ -116,6 +123,7 @@ def fetch(
         params={"RaceDate": date, "Racecourse": racecourse.upper(), "RaceNo": race_no},
         headers=HEADERS,
         timeout=35,
+        allow_redirects=True,
     )
     if response.status_code in {403, 429}:
         raise RuntimeError(f"HKJC 回傳 HTTP {response.status_code}；已停止，請稍後重試。")
@@ -155,9 +163,9 @@ def fetch(
         body_weight = first_number(optional_cell("horse_body_weight_lbs") or "")
         official_body_weight_delta = first_number(optional_cell("official_body_weight_delta_lbs") or "")
         runner = {
-            "horse_no": int(horse_no), "horse_name": name,
+            "horse_no": int(horse_no), "horse_number": int(horse_no), "horse_name": name,
             "horse_code": optional_cell("horse_code"),
-            "draw": int(draw), "weight_lbs": float(weight),
+            "draw": int(draw), "weight_lbs": float(weight), "weight": float(weight),
             "jockey": normalize(cells[mapping["jockey"]]), "trainer": normalize(cells[mapping["trainer"]]),
             # Some historical or exceptional cards omit public equipment / body-weight columns.
             "equipment": optional_cell("equipment"),
