@@ -124,7 +124,22 @@ def main() -> int:
             for row in response_prediction.get("predictions", []):
                 for key in ("n6_neural_win_probability", "n6_neural_score", "n6_rank", "joint_neural_probability", "joint_neural_score", "joint_rank", "joint_recommendation", "joint_consensus"):
                     row.pop(key, None)
-            assert response_prediction == prediction
+            # The API intentionally adds display-only extensions; verify that all original
+            # prediction fields are preserved without requiring byte-for-byte equality.
+            for key, expected_value in prediction.items():
+                if key == "predictions":
+                    continue
+                assert response_prediction.get(key) == expected_value, (key, response_prediction.get(key), expected_value)
+            expected_rows = prediction.get("predictions", [])
+            actual_rows = response_prediction.get("predictions", [])
+            assert len(actual_rows) == len(expected_rows)
+            for expected_row, actual_row in zip(expected_rows, actual_rows):
+                for key, expected_value in expected_row.items():
+                    assert actual_row.get(key) == expected_value, (key, actual_row.get(key), expected_value)
+            for extension_key in ("odds_drift", "kelly_staking", "qualitative_intel"):
+                assert all(extension_key in row for row in actual_rows), extension_key
+            assert "display_extensions" in response_prediction
+            assert response_prediction["display_extensions"].get("status") == "read_only"
             assert body["high_probability_filter"] == filtered
 
             double_trio = client.get("/api/double-trio/2026-08-18/ST")
