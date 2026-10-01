@@ -40,6 +40,10 @@ def main() -> int:
     payload["_p0_safety_gate"] = json.loads(args.safety_gate.read_text(encoding="utf-8"))
     plan = choose_plan(payload)
     markers = marker_map(plan)
+    gate_status = str(payload.get("_p0_safety_gate", {}).get("status", ""))
+    if gate_status == "fail_closed":
+        markers = {}
+        plan = {"status": "fail_closed", "reason": "P0 fail-closed: no actionable symbols", "anchor": None, "legs": []}
     prediction = payload.get("prediction", payload)
     race = prediction.get("race", {}) if isinstance(prediction, dict) else {}
     rows = prediction.get("predictions", []) if isinstance(prediction, dict) else []

@@ -174,7 +174,6 @@ def apply_place_selection_projection(prediction: dict[str, Any], job_dir: Path, 
     race_no_value = race.get("race_no")
     if race.get("date") not in (None, requested_date.isoformat(), requested_date.strftime("%Y/%m/%d")) or race.get("course") not in (None, course) or (race_no_value is not None and int(race_no_value) != race_no): return prediction
     markers = sidecar.get("markers") if isinstance(sidecar.get("markers"), dict) else {}
-    if not markers: return prediction
     result = dict(prediction); rows = []
     for row in prediction.get("predictions", []):
         item = dict(row); horse_no = item.get("horse_no", item.get("horse_number", item.get("runner_no", item.get("number"))))
