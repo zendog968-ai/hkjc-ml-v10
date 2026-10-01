@@ -119,6 +119,7 @@ def script_paths(project_dir: Path) -> dict[str, Path]:
         "new_horse": "enrich_hkjc_new_horse_priors.py",
         "double_trio": "fetch_hkjc_double_trio.py",
         "safety": "runtime/p0_safety_gate.py",
+        "decision_projection": "runtime/p0_decision_projection.py",
         "tips": "generate_actionable_tips_p0.py",
         "shadow": "runtime/shadow_features_logger.py",
         "place_symbols": "runtime/place_selection_projection.py",
@@ -269,13 +270,15 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
     # Only the final (T-5) stage runs prediction / report. It tolerates a missing T-15 snapshot.
     if offset == min(DEFAULT_SNAPSHOT_MINUTES):
         prediction, csv_file = output_dir / "prediction.json", output_dir / "prediction.csv"
+        decision_projection = output_dir / "prediction_effective.json"
         early = output_dir / "odds_t_minus_15.json"; filtered, markdown = output_dir / "high_probability_filter.json", output_dir / "pre_race_report.md"
         commands = [
             ("predict", [python, str(paths["predict"]), "--db", str(project_dir / "hkjc_last_season.sqlite"), "--model", str(project_dir / "horse_model.pkl"), "--race-card", str(card), "--win-odds-overlay", str(win), "--place-odds-overlay", str(place), "--odds-snapshot-early", str(early), "--odds-snapshot-late", str(snapshot), "--output-json", str(prediction), "--output-csv", str(csv_file)], 180),
             ("filter", [python, str(paths["filter"]), "--prediction", str(prediction), "--output", str(filtered), "--markdown-output", str(markdown)], 60),
             ("p0_post_safety", [python, str(paths["safety"]), "--phase", "post", "--card", str(card), "--meta", str(meta), "--prediction", str(prediction), "--date", job.date, "--course", job.racecourse, "--race-no", str(job.race_no), "--output", str(output_dir / "p0_safety_gate.json")], 30),
+            ("decision_projection", [python, str(paths["decision_projection"]), "--prediction", str(prediction), "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(decision_projection)], 30),
             ("n6_t5_snapshot", [str(Path(os.environ.get("N6_PYTHON", "/home/ubuntu/n6_engine/.venv/bin/python"))), str(paths["n6_t5_snapshot"]), "--race-card", str(card), "--odds-snapshot", str(snapshot), "--odds-meta", str(meta), "--db-snapshot-manifest", str(db_snapshot_manifest), "--p0-gate", str(output_dir / "p0_safety_gate.json"), "--race-date", job.date.replace("/", "-"), "--course", job.racecourse, "--race-no", str(job.race_no), "--output", str(output_dir / "n6_t5_snapshot.json")], 60),
-            ("actionable_tips", [python, str(paths["tips"]), str(prediction), "--label", f"{job.racecourse}-R{job.race_no:02d}", "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(output_dir / "actionable_tips.txt")], 60),
+            ("actionable_tips", [python, str(paths["tips"]), str(prediction), "--decision-projection", str(decision_projection), "--label", f"{job.racecourse}-R{job.race_no:02d}", "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(output_dir / "actionable_tips.txt")], 60),
             ("shadow_logger", [python, str(paths["shadow"]), "--race-card", str(card), "--prediction", str(prediction), "--odds-snapshot", str(snapshot), "--odds-meta", str(meta), "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(project_dir / "runtime/shadow_inference_log.csv")], 10),
             ("place_symbols", [python, str(paths["place_symbols"]), str(prediction), "--label", f"{job.racecourse}-R{job.race_no:02d}", "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--text-output", str(output_dir / "actionable_tips_place_cap.txt"), "--metadata-output", str(output_dir / "place_selection.json"), "--race-date", job.date.replace("/", "-"), "--course", job.racecourse, "--race-no", str(job.race_no)], 60),
         ]

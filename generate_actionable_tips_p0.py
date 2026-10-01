@@ -122,11 +122,51 @@ def ref(row: dict[str, Any]) -> tuple[str, str]:
     return (text(row, "horse_no", "horse_number", "runner_no", "number", default="—"), text(row, "horse_name"))
 
 
+def conservative_paper_lines(payload: dict[str, Any]) -> list[str]:
+    """Render the only permitted degraded output: one paper-only WIN trial."""
+    prediction = payload.get("prediction", payload)
+    rows = prediction.get("predictions", []) if isinstance(prediction, dict) else []
+    diagnostics = prediction.get("decision_diagnostics", {}) if isinstance(prediction, dict) else {}
+    records = diagnostics.get("records", []) if isinstance(diagnostics, dict) else []
+    record_by_no = {str(record.get("horse_no")): record for record in records if isinstance(record, dict)}
+    approved = [row for row in rows if isinstance(row, dict) and row.get("decision_action") == "approved_conservative_paper"]
+    lines = [
+        "【保守降級 · 僅限紙上測試】",
+        "資料身份、賠率及 prediction 完整性已通過，但本場高不確定性；只容許一個 WIN 紙上測試，禁止 Q／QP、單膽及多馬組合。",
+    ]
+    if not approved:
+        lines.append("本場沒有同時通過最低勝率、正 EV、正 Kelly 與保守最低單位規則的候選；不分配紙上倉位。")
+        return lines
+    row = approved[0]
+    horse_no, horse_name = ref(row)
+    record = record_by_no.get(str(horse_no), {})
+    ev = num(row, "ev_per_unit")
+    raw_kelly = num(row, "kelly_quarter_fraction_capped")
+    stake = num(row, "recommended_paper_stake_fraction") or 0.0
+    ev_text = "—" if ev is None else f"{ev:.3f}"
+    lines.extend([
+        "單一 WIN 紙上測試：",
+        f"{horse_no}號「{horse_name}」（預測勝率 {pct(num(row, 'predicted_win_probability'))}%；EV {ev_text}；原始 1/4 Kelly {pct(raw_kelly)}%；建議紙上倉位 {stake * 100:.2f}% 本金）。",
+        f"診斷規則：{record.get('rule_id', '—')}／{record.get('reason_code', '—')}。",
+        "風控：保守模式上限為本金 0.50%，只供記帳驗證；不會自動下注。",
+    ])
+    return lines
+
+
 def render(payload: dict[str, Any], label: str) -> str:
     anchor, legs = choose_plan(payload)
     safety = payload.get("_p0_safety_gate") if isinstance(payload.get("_p0_safety_gate"), dict) else {}
+    risk_control = payload.get("risk_control") if isinstance(payload.get("risk_control"), dict) else {}
+    lines = [f"下注實戰精選方案（{label}）", odds_status_label(payload)]
+    if risk_control.get("decision_mode") == "blocked_fatal":
+        lines.extend(["【Fail-Closed · 資料閘門未通過】", "資料身份、賠率或欄位驗證失敗；不生成任何決策方案。"])
+        return "\n".join(lines) + "\n"
+    if risk_control.get("decision_mode") == "conservative_paper":
+        lines.append("【保守紙上風控】僅單一 WIN；本金上限 0.50%；不建立 Q／QP。")
+        lines.extend(conservative_paper_lines(payload))
+        return "\n".join(lines) + "\n"
     stakes = capped_stakes(anchor, legs)
-    lines = [f"下注實戰精選方案（{label}）", odds_status_label(payload), "【Fractional Kelly硬上限】WIN ≤ 2.00%；Q/QP合計 ≤ 4.00%", cap_note(stakes)]
+    lines.extend(["【Fractional Kelly硬上限】WIN ≤ 2.00%；Q/QP合計 ≤ 4.00%", cap_note(stakes)])
     if safety.get("status") == "fail_closed":
         lines.extend(["【Fail-Closed · 資料閘門未通過】", "資料身份或欄位驗證失敗；不生成任何正式方案。"])
         return "\n".join(lines) + "\n"
@@ -176,8 +216,10 @@ def main() -> int:
     parser.add_argument("--label", required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--safety-gate", type=Path)
+    parser.add_argument("--decision-projection", type=Path, help="effective projection; raw prediction remains audit evidence")
     args = parser.parse_args()
-    payload = json.loads(args.prediction_json.read_text(encoding="utf-8"))
+    source = args.decision_projection if args.decision_projection and args.decision_projection.exists() else args.prediction_json
+    payload = json.loads(source.read_text(encoding="utf-8"))
     if args.safety_gate and args.safety_gate.exists():
         payload["_p0_safety_gate"] = json.loads(args.safety_gate.read_text(encoding="utf-8"))
     output = render(payload, args.label)
