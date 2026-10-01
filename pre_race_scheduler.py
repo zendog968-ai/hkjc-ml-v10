@@ -122,6 +122,8 @@ def script_paths(project_dir: Path) -> dict[str, Path]:
         "tips": "generate_actionable_tips_p0.py",
         "shadow": "runtime/shadow_features_logger.py",
         "place_symbols": "runtime/place_selection_projection.py",
+        "meeting_db_snapshot": "runtime/n6_meeting_db_snapshot.py",
+        "n6_t5_snapshot": "runtime/n6_t5_snapshot.py",
     }
     paths = {key: project_dir / name for key, name in names.items()}
     missing = [path.name for key, path in paths.items() if key != "new_horse" and not path.exists()]
@@ -133,6 +135,37 @@ def double_trio_output_path(output_root: Path, job: RaceJob) -> Path:
     """Meeting-level official Double Trio artifact shared by the read-only API."""
     year, month, day = job.date.split("/")
     return output_root / year / month / f"{day}_{job.racecourse}_double_trio_official.json"
+
+
+def meeting_db_snapshot_manifest(project_dir: Path, job: RaceJob) -> Path:
+    """Return the immutable evidence manifest path for one active meeting."""
+    year, month, day = job.date.split("/")
+    return project_dir / "runtime" / "n6_meeting_db_snapshots" / year / month / f"{day}_{job.racecourse}" / "meeting_db_snapshot.manifest.json"
+
+
+def ensure_meeting_db_snapshot(config_path: Path, project_dir: Path, job: RaceJob, now: datetime, dry_run: bool) -> dict[str, Any]:
+    """Lock the race-day database before any pre-race stage; failures remain non-fatal."""
+    meeting_date = job.date.replace("/", "-")
+    manifest = meeting_db_snapshot_manifest(project_dir, job)
+    record: dict[str, Any] = {"meeting": {"race_date": meeting_date, "racecourse": job.racecourse}, "manifest": str(manifest)}
+    if now.astimezone(HK_TZ).date().isoformat() != meeting_date:
+        return {**record, "status": "not_meeting_day"}
+    if now.astimezone(HK_TZ) >= job.start_at:
+        return {**record, "status": "missed_pre_race_window"}
+    if manifest.is_file():
+        return {**record, "status": "ready"}
+    if dry_run:
+        return {**record, "status": "dry_run_due"}
+    snapshot_script = project_dir / "runtime" / "n6_meeting_db_snapshot.py"
+    if not snapshot_script.is_file():
+        return {**record, "status": "failed", "message": "missing n6_meeting_db_snapshot.py"}
+    result = run_command([
+        sys.executable, str(snapshot_script),
+        "--source", str(project_dir / "hkjc_last_season.sqlite"),
+        "--schedule-manifest", str(config_path),
+        "--snapshot-root", str(project_dir / "runtime" / "n6_meeting_db_snapshots"),
+    ], manifest.parent, "n6_meeting_db_snapshot", 180)
+    return {**record, "status": "ready" if result["returncode"] == 0 and manifest.is_file() else "failed", "step": result}
 
 
 def refresh_double_trio_official(
@@ -207,6 +240,17 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
         if paths["new_horse"].exists():
             result = run_command([python, str(paths["new_horse"]), "--db", str(project_dir / "hkjc_last_season.sqlite"), "--race-card", str(card), "--report", str(output_dir / "new_horse_priors_report.json")], output_dir, "new_horse_priors", 180)
             outcomes.append(result)  # Non-fatal: unknown priors safely remain neutral.
+    db_snapshot_manifest = meeting_db_snapshot_manifest(project_dir, job)
+    if not db_snapshot_manifest.is_file():
+        db_snapshot_result = run_command([
+            python, str(paths["meeting_db_snapshot"]),
+            "--source", str(project_dir / "hkjc_last_season.sqlite"),
+            "--schedule-manifest", str(project_dir / "runtime" / "pre_race_schedule_current.json"),
+            "--snapshot-root", str(project_dir / "runtime" / "n6_meeting_db_snapshots"),
+        ], output_dir, "n6_meeting_db_snapshot", 180)
+        outcomes.append(db_snapshot_result)  # Evidence-only: failure only suppresses the N6 sidecar.
+    else:
+        outcomes.append({"step": "n6_meeting_db_snapshot", "returncode": 0, "status": "already_available", "manifest": str(db_snapshot_manifest)})
     odds_command = [python, str(paths["odds"]), "--race-card", str(card), "--output", str(win), "--place-output", str(place), "--combined-output", str(combined), "--metadata-output", str(meta), "--snapshot-output", str(snapshot), "--snapshot-label", f"T_MINUS_{offset}", "--race-date", job.date, "--racecourse", job.racecourse, "--race-no", str(job.race_no), "--min-interval", str(odds_min_interval), "--state-file", str(output_root / "live_odds_rate_limit_state.json")]
     result = run_command(odds_command, output_dir, f"odds_t_minus_{offset}", 90); outcomes.append(result)
     if result["returncode"]: return {"status": "failed", "failed_step": "odds", "output_dir": str(output_dir), "steps": outcomes}
@@ -230,14 +274,17 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
             ("predict", [python, str(paths["predict"]), "--db", str(project_dir / "hkjc_last_season.sqlite"), "--model", str(project_dir / "horse_model.pkl"), "--race-card", str(card), "--win-odds-overlay", str(win), "--place-odds-overlay", str(place), "--odds-snapshot-early", str(early), "--odds-snapshot-late", str(snapshot), "--output-json", str(prediction), "--output-csv", str(csv_file)], 180),
             ("filter", [python, str(paths["filter"]), "--prediction", str(prediction), "--output", str(filtered), "--markdown-output", str(markdown)], 60),
             ("p0_post_safety", [python, str(paths["safety"]), "--phase", "post", "--card", str(card), "--meta", str(meta), "--prediction", str(prediction), "--date", job.date, "--course", job.racecourse, "--race-no", str(job.race_no), "--output", str(output_dir / "p0_safety_gate.json")], 30),
+            ("n6_t5_snapshot", [str(Path(os.environ.get("N6_PYTHON", "/home/ubuntu/n6_engine/.venv/bin/python"))), str(paths["n6_t5_snapshot"]), "--race-card", str(card), "--odds-snapshot", str(snapshot), "--odds-meta", str(meta), "--db-snapshot-manifest", str(db_snapshot_manifest), "--p0-gate", str(output_dir / "p0_safety_gate.json"), "--race-date", job.date.replace("/", "-"), "--course", job.racecourse, "--race-no", str(job.race_no), "--output", str(output_dir / "n6_t5_snapshot.json")], 60),
             ("actionable_tips", [python, str(paths["tips"]), str(prediction), "--label", f"{job.racecourse}-R{job.race_no:02d}", "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(output_dir / "actionable_tips.txt")], 60),
             ("shadow_logger", [python, str(paths["shadow"]), "--race-card", str(card), "--prediction", str(prediction), "--odds-snapshot", str(snapshot), "--odds-meta", str(meta), "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(project_dir / "runtime/shadow_inference_log.csv")], 10),
             ("place_symbols", [python, str(paths["place_symbols"]), str(prediction), "--label", f"{job.racecourse}-R{job.race_no:02d}", "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--text-output", str(output_dir / "actionable_tips_place_cap.txt"), "--metadata-output", str(output_dir / "place_selection.json"), "--race-date", job.date.replace("/", "-"), "--course", job.racecourse, "--race-no", str(job.race_no)], 60),
         ]
         for name, command, timeout in commands:
             result = run_command(command, output_dir, name, timeout); outcomes.append(result)
-            if result["returncode"] and name != "shadow_logger": return {"status": "failed", "failed_step": name, "output_dir": str(output_dir), "steps": outcomes}
+            if result["returncode"] and name not in {"shadow_logger", "n6_t5_snapshot"}: return {"status": "failed", "failed_step": name, "output_dir": str(output_dir), "steps": outcomes}
         safety_payload = load_json(output_dir / "p0_safety_gate.json", {})
+        n6_snapshot_path = output_dir / "n6_t5_snapshot.json"
+        n6_snapshot_payload = load_json(n6_snapshot_path, {})
         payload = load_json(filtered, {})
         provenance_path = output_dir / "v103_snapshot_provenance.json"
         atomic_write_json(provenance_path, {
@@ -260,15 +307,21 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
             "odds_snapshot_sha256": sha256_file(snapshot),
             "p0_safety_gate_path": str(output_dir / "p0_safety_gate.json"),
             "p0_safety_status": safety_payload.get("status"),
+            "n6_meeting_db_snapshot_manifest_path": str(db_snapshot_manifest),
+            "n6_meeting_db_snapshot_manifest_sha256": sha256_file(db_snapshot_manifest) if db_snapshot_manifest.is_file() else None,
+            "n6_t5_snapshot_path": str(n6_snapshot_path),
+            "n6_t5_snapshot_sha256": sha256_file(n6_snapshot_path) if n6_snapshot_path.is_file() else None,
+            "n6_t5_snapshot_status": n6_snapshot_payload.get("status", "missing"),
             "shadow_log_path": str(project_dir / "runtime/shadow_inference_log.csv"),
         })
-        return {"status": "completed", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "steps": outcomes, "selection_count": payload.get("selection_count", 0), "markdown_report": str(markdown), "whatsapp_direct_link": (payload.get("whatsapp") or {}).get("direct_link"), "odds_status": load_json(meta, {}).get("status", "unknown"), "p0_safety_status": safety_payload.get("status"), "p0_safety_gate": str(output_dir / "p0_safety_gate.json"), "v103_snapshot_provenance": str(provenance_path)}
-    return {"status": "snapshot_collected", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "snapshot": str(snapshot), "steps": outcomes, "odds_status": load_json(meta, {}).get("status", "unknown")}
+        return {"status": "completed", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "steps": outcomes, "selection_count": payload.get("selection_count", 0), "markdown_report": str(markdown), "whatsapp_direct_link": (payload.get("whatsapp") or {}).get("direct_link"), "odds_status": load_json(meta, {}).get("status", "unknown"), "p0_safety_status": safety_payload.get("status"), "p0_safety_gate": str(output_dir / "p0_safety_gate.json"), "n6_meeting_db_snapshot_manifest": str(db_snapshot_manifest), "n6_t5_snapshot": str(n6_snapshot_path), "n6_t5_snapshot_status": n6_snapshot_payload.get("status", "missing"), "v103_snapshot_provenance": str(provenance_path)}
+    return {"status": "snapshot_collected", "stage": f"T_MINUS_{offset}", "output_dir": str(output_dir), "snapshot": str(snapshot), "steps": outcomes, "odds_status": load_json(meta, {}).get("status", "unknown"), "n6_meeting_db_snapshot_manifest": str(db_snapshot_manifest), "n6_meeting_db_snapshot_status": "ready" if db_snapshot_manifest.is_file() else "unavailable"}
 
 
 def process(config_path: Path, project_dir: Path, output_root: Path, state_path: Path, now: datetime, dry_run: bool, odds_min_interval: int) -> dict[str, Any]:
     offsets, jobs = load_jobs(config_path); candidates = due_stages(jobs, offsets, now); state = load_json(state_path, {"runs": {}}); runs = state.setdefault("runs", {})
     result: dict[str, Any] = {"checked_at": now.isoformat(), "snapshot_minutes_before": list(offsets), "configured_jobs": len(jobs), "due_stages": [{"job": job.key, "offset": offset} for job, offset in candidates], "processed": [], "dry_run": dry_run}
+    result["meeting_db_snapshot"] = ensure_meeting_db_snapshot(config_path, project_dir, jobs[0], now, dry_run) if jobs else {"status": "not_configured"}
     result["double_trio_official"] = refresh_double_trio_official(jobs, project_dir, output_root, state, now, dry_run)
     for job, offset in candidates:
         job_state = runs.setdefault(job.key, {"stages": {}}); stage_key = f"T_MINUS_{offset}"; prior = job_state.setdefault("stages", {}).get(stage_key, {})
