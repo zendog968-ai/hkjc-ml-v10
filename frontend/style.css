@@ -570,3 +570,5 @@ body {
   .actionable-tips-text { font-size: .84rem; }
 }
 
+
+.place-selection-marker { display:inline-block; margin-right:.28rem; color:#f4c95d; font-weight:800; letter-spacing:.04em; text-shadow:0 0 8px rgba(244,201,93,.35); }

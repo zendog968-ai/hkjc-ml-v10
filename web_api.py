@@ -164,6 +164,29 @@ def read_overseas_deep_backtest_summary() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else fallback
 
 
+def apply_place_selection_projection(prediction: dict[str, Any], job_dir: Path, requested_date: Date, course: str, race_no: int) -> dict[str, Any]:
+    """Merge a validated read-only symbol sidecar without changing model values."""
+    sidecar_path = job_dir / "place_selection.json"
+    if not sidecar_path.is_file(): return prediction
+    try: sidecar = read_json_artifact(sidecar_path)
+    except HTTPException: return prediction
+    race = sidecar.get("race") if isinstance(sidecar.get("race"), dict) else {}
+    race_no_value = race.get("race_no")
+    if race.get("date") not in (None, requested_date.isoformat(), requested_date.strftime("%Y/%m/%d")) or race.get("course") not in (None, course) or (race_no_value is not None and int(race_no_value) != race_no): return prediction
+    markers = sidecar.get("markers") if isinstance(sidecar.get("markers"), dict) else {}
+    if not markers: return prediction
+    result = dict(prediction); rows = []
+    for row in prediction.get("predictions", []):
+        item = dict(row); horse_no = item.get("horse_no", item.get("horse_number", item.get("runner_no", item.get("number"))))
+        marker = markers.get(str(horse_no))
+        if marker:
+            item["display_markers"] = marker; item["symbol"] = marker; item["selection_role"] = "place_selection_marker"
+        rows.append(item)
+    result["predictions"] = rows
+    result["place_selection_projection"] = {"status": sidecar.get("status"), "read_only": True, "legend": sidecar.get("legend", {}), "markers": markers}
+    return result
+
+
 def read_json_artifact(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(safely_read_bytes(path, MAX_JSON_BYTES).decode("utf-8"))
@@ -414,6 +437,7 @@ async def prediction_for_race(
         }
     # Display-only copy: prediction.json remains byte-for-byte untouched.
     enriched_prediction = enrich_prediction_for_display(enriched_prediction)
+    enriched_prediction = apply_place_selection_projection(enriched_prediction, job_dir, requested_date, normalized_course, normalized_race_no)
     filter_path = job_dir / "high_probability_filter.json"
     return {
         "date": requested_date.isoformat(),

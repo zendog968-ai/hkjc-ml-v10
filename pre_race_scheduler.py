@@ -121,6 +121,7 @@ def script_paths(project_dir: Path) -> dict[str, Path]:
         "safety": "runtime/p0_safety_gate.py",
         "tips": "generate_actionable_tips_p0.py",
         "shadow": "runtime/shadow_features_logger.py",
+        "place_symbols": "runtime/place_selection_projection.py",
     }
     paths = {key: project_dir / name for key, name in names.items()}
     missing = [path.name for key, path in paths.items() if key != "new_horse" and not path.exists()]
@@ -231,6 +232,7 @@ def execute_stage(job: RaceJob, offset: int, project_dir: Path, output_root: Pat
             ("p0_post_safety", [python, str(paths["safety"]), "--phase", "post", "--card", str(card), "--meta", str(meta), "--prediction", str(prediction), "--date", job.date, "--course", job.racecourse, "--race-no", str(job.race_no), "--output", str(output_dir / "p0_safety_gate.json")], 30),
             ("actionable_tips", [python, str(paths["tips"]), str(prediction), "--label", f"{job.racecourse}-R{job.race_no:02d}", "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(output_dir / "actionable_tips.txt")], 60),
             ("shadow_logger", [python, str(paths["shadow"]), "--race-card", str(card), "--prediction", str(prediction), "--odds-snapshot", str(snapshot), "--odds-meta", str(meta), "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--output", str(project_dir / "runtime/shadow_inference_log.csv")], 10),
+            ("place_symbols", [python, str(paths["place_symbols"]), str(prediction), "--label", f"{job.racecourse}-R{job.race_no:02d}", "--safety-gate", str(output_dir / "p0_safety_gate.json"), "--text-output", str(output_dir / "actionable_tips_place_cap.txt"), "--metadata-output", str(output_dir / "place_selection.json"), "--race-date", job.date.replace("/", "-"), "--course", job.racecourse, "--race-no", str(job.race_no)], 60),
         ]
         for name, command, timeout in commands:
             result = run_command(command, output_dir, name, timeout); outcomes.append(result)
