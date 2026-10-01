@@ -132,13 +132,24 @@ def _live_payload(prediction: dict[str, Any], date: str, course: str, race_no: i
     }
 
 
+def _scores_match_prediction(prediction: dict[str, Any], scores: Any) -> bool:
+    """Accept historical N6 scores only when the runner set is exactly current."""
+    if not isinstance(scores, list):
+        return False
+    v10_names = {_horse_key(row.get("horse_name")) for row in prediction.get("predictions", []) if isinstance(row, dict)}
+    n6_names = {_horse_key(row.get("horse_name")) for row in scores if isinstance(row, dict)}
+    return bool(v10_names) and v10_names == n6_names and len(scores) == len(v10_names)
+
+
 def fetch_n6_scores(prediction: dict[str, Any], date: str, course: str, race_no: int) -> tuple[str, list[dict[str, Any]] | None, str, dict[str, Any] | None]:
     """Prefer historical pre-race features; fall back to a supplied future-race card."""
     status, payload = _post_json(f"/v1/inference/historical/{date}/{course}/{race_no}")
-    if status == 200 and isinstance(payload, dict) and isinstance(payload.get("scores"), list):
+    if status == 200 and isinstance(payload, dict) and _scores_match_prediction(prediction, payload.get("scores")):
         return "historical_pre_race_features", payload["scores"], "available", payload.get("model") if isinstance(payload.get("model"), dict) else None
-    if status not in {0, 404}:
-        return "unavailable", None, "N6 服務未能完成歷史賽事評分；V10 原有分析維持不變。", None
+    # A stale/incomplete historical snapshot must never be merged partially.
+    # Fall back to live card scoring, which uses the current 1:1 race card.
+    if status == 200 and isinstance(payload, dict) and isinstance(payload.get("scores"), list):
+        logger.warning("N6 historical scores do not match current field; falling back to live scoring")
     live_payload = _live_payload(prediction, date, course, race_no)
     if live_payload is None:
         return "unavailable", None, "N6 未找到歷史特徵，且 V10 工件缺少完整賽前資料；V10 原有分析維持不變。", None
