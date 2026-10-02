@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from statistics import mean
 
@@ -23,6 +24,43 @@ def as_float(value):
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def norm_date(value):
+    text = str(value or "").strip().replace("/", "-")
+    return text if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) else None
+
+
+def norm_course(value):
+    text = str(value or "").strip().upper()
+    return text if re.fullmatch(r"[A-Z]{2,4}", text) else None
+
+
+def identity_from_prediction_source(value):
+    """Extract meeting identity from the immutable prediction-export filename."""
+    name = Path(str(value or "")).name
+    matched = re.fullmatch(r"predictions_(\d{4}-\d{2}-\d{2})_([A-Za-z]{2,4})\.json", name)
+    if not matched:
+        return None, None
+    return matched.group(1), matched.group(2).upper()
+
+
+def resolve_identity(audit: dict, cli_date: str | None, cli_course: str | None):
+    """Resolve one consistent identity or fail closed on missing/conflicting data."""
+    source_date, source_course = identity_from_prediction_source(audit.get("prediction_source"))
+    candidates = {
+        "cli": (norm_date(cli_date), norm_course(cli_course)),
+        "audit": (norm_date(audit.get("race_date")), norm_course(audit.get("racecourse"))),
+        "prediction_source": (source_date, source_course),
+    }
+    dates = {date for date, _ in candidates.values() if date}
+    courses = {course for _, course in candidates.values() if course}
+    if len(dates) != 1 or len(courses) != 1:
+        raise ValueError(
+            "fail_closed_identity_missing_or_conflicting: "
+            + json.dumps(candidates, ensure_ascii=False, sort_keys=True)
+        )
+    return dates.pop(), courses.pop(), candidates
 
 
 def find_prediction(root: Path, race_date: str, course: str, race_no: int):
@@ -45,7 +83,7 @@ def find_prediction(root: Path, race_date: str, course: str, race_no: int):
     return None
 
 
-def diagnose_race(audit_row, prediction_path: Path | None):
+def diagnose_race(audit_row, prediction_path: Path | None, race_date: str, course: str):
     race_no = int(audit_row["race_no"])
     brier = as_float(audit_row.get("brier_score"))
     field_size = int(audit_row.get("field_size") or 0)
@@ -64,6 +102,8 @@ def diagnose_race(audit_row, prediction_path: Path | None):
         "place_brier_score": as_float(audit_row.get("place_brier_score")),
         "prediction_snapshot": str(prediction_path) if prediction_path else None,
         "prediction_join_status": "missing",
+        "expected_race_date": race_date,
+        "expected_racecourse": course,
         "winner_probability": None,
         "winner_probability_rank": None,
         "top1_probability": None,
@@ -79,6 +119,13 @@ def diagnose_race(audit_row, prediction_path: Path | None):
         return result
 
     payload = load_json(prediction_path)
+    race = payload.get("race") if isinstance(payload.get("race"), dict) else {}
+    snapshot_date = norm_date(race.get("race_date"))
+    snapshot_course = norm_course(race.get("racecourse"))
+    if snapshot_date != race_date or snapshot_course != course:
+        result["prediction_join_status"] = "identity_mismatch"
+        result["flags"].append("prediction_identity_mismatch")
+        return result
     predictions = payload.get("predictions") or []
     winner_no = audit_row.get("winner_horse_no")
     ordered = sorted(
@@ -124,20 +171,28 @@ def main():
     parser.add_argument("--audit", type=Path, required=True)
     parser.add_argument("--predictions-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--race-date", help="meeting date override YYYY-MM-DD")
+    parser.add_argument("--racecourse", help="meeting course override, e.g. ST")
     args = parser.parse_args()
     audit = load_json(args.audit)
-    race_date = str(audit.get("race_date", "2026-09-13")).replace("/", "-")
-    course = str(audit.get("racecourse", "ST"))
+    try:
+        race_date, course, identity_sources = resolve_identity(
+            audit, args.race_date, args.racecourse
+        )
+    except ValueError as exc:
+        print(json.dumps({"status": str(exc)}, ensure_ascii=False))
+        return 2
     rows = []
     for row in audit.get("races", []):
         path = find_prediction(args.predictions_root, race_date, course, int(row["race_no"]))
-        rows.append(diagnose_race(row, path))
+        rows.append(diagnose_race(row, path, race_date, course))
     scored = [r for r in rows if r["prediction_join_status"] == "matched"]
     out = {
         "report_type": "v10_post_race_model_diagnostics",
         "read_only": True,
         "race_date": race_date,
         "racecourse": course,
+        "identity_sources": identity_sources,
         "race_count": len(rows),
         "prediction_joined_count": len(scored),
         "brier_worse_than_uniform_races": [r["race_no"] for r in rows if r["brier_worse_than_uniform"]],
@@ -150,9 +205,10 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: out[k] for k in ("race_count", "prediction_joined_count", "brier_worse_than_uniform_races", "top3_miss_races", "odds_degraded_races")}, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 
 ## end

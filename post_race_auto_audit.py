@@ -98,7 +98,7 @@ def main() -> int:
         audit_path = out / "brier_audit.json"; audit_log = out / "brier_audit.jsonl"
         audit = run([sys.executable, str(project / "post_race_brier_audit.py"), "--predictions", str(predictions_path), "--results", str(results_path), "--output", str(audit_path), "--log", str(audit_log)], log, 120)
         if audit.returncode != 0: result.update({"status":"fail_closed_brier_failed", "audit_returncode":audit.returncode}); (out / "auto_audit_run.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"); print(json.dumps(result, ensure_ascii=False)); return 2
-        diagnostics = run([sys.executable, str(project / "post_race_model_diagnostics.py"), "--audit", str(audit_path), "--predictions-root", str(project / "runtime/pre_race"), "--output", str(out / "model_diagnostics.json")], log, 120)
+        diagnostics = run([sys.executable, str(project / "post_race_model_diagnostics.py"), "--audit", str(audit_path), "--predictions-root", str(project / "runtime/pre_race"), "--race-date", date, "--racecourse", course, "--output", str(out / "model_diagnostics.json")], log, 120)
         result.update({"status":"completed" if diagnostics.returncode == 0 else "completed_with_diagnostics_warning", "result_rows":count, "audit":str(audit_path), "diagnostics_returncode":diagnostics.returncode})
         (out / "auto_audit_run.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"); print(json.dumps(result, ensure_ascii=False)); return 0 if diagnostics.returncode == 0 else 1
 
