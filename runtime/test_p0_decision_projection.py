@@ -102,6 +102,18 @@ class DecisionProjectionV2Tests(unittest.TestCase):
         self.assertEqual(row["decision_action"], "blocked")
         self.assertEqual(record["reason_code"], SUPPRESSED_ODDS_INCOMPLETE)
 
+    def test_invalid_win_odds_remains_row_level_block(self):
+        for odds in (None, 0.0, -2.0, 1.0, float("inf"), float("nan")):
+            with self.subTest(odds=odds):
+                fixture = raw(ev=0.05, kelly=0.005)
+                fixture["predictions"][0]["win_odds"] = odds
+                result = project_prediction(fixture, gate("restricted_high_uncertainty", formal=False, single=False))
+                row, record = result["predictions"][0], result["decision_diagnostics"]["records"][0]
+                self.assertEqual(row["decision_action"], "blocked")
+                self.assertEqual(row["recommended_paper_stake_fraction"], 0.0)
+                self.assertEqual(record["rule_id"], "P0_ROW_001")
+                self.assertIn("invalid_win_odds", record["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

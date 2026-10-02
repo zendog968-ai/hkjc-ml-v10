@@ -115,6 +115,8 @@ def input_errors(values: dict[str, float | None]) -> list[str]:
     errors: list[str] = []
     if values["win_probability"] is None or not 0.0 <= float(values["win_probability"]) <= 1.0:
         errors.append("invalid_win_probability")
+    if values["win_odds"] is None or float(values["win_odds"]) <= 1.0:
+        errors.append("invalid_win_odds")
     if values["ev_per_unit"] is None:
         errors.append("missing_ev")
     if values["kelly_quarter_fraction"] is None or float(values["kelly_quarter_fraction"] or 0.0) < 0.0:
