@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = "v10_effective_decision_projection_v2"
+SCHEMA_VERSION = "v10_effective_decision_projection_v3"
+MIN_WIN_MARGIN_P = 0.05
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 WIN_KELLY_HARD_CAP = 0.02
 CONSERVATIVE_PAPER_CAP = 0.005
@@ -136,7 +137,7 @@ def set_canonical(row: dict[str, Any], values: dict[str, float | None]) -> None:
     })
 
 
-def block_row(row: dict[str, Any], *, code: str, rule: str, message: str) -> dict[str, Any]:
+def block_row(row: dict[str, Any], *, code: str, rule: str, message: str, **extra: Any) -> dict[str, Any]:
     for field in ("ev_per_unit", "win_ev_per_unit", "win_ev", "place_ev_per_unit", "kelly_full_fraction", "kelly_quarter_fraction_capped", "fractional_kelly_stake_fraction", "kelly_fraction", "place_kelly_quarter_fraction_capped"):
         row.pop(field, None)
     row.update({
@@ -148,7 +149,7 @@ def block_row(row: dict[str, Any], *, code: str, rule: str, message: str) -> dic
         "decision_action": "blocked", "recommended_paper_stake_fraction": 0.0,
         "stake_policy": "none",
     })
-    return diagnostic(row, "blocked", rule, code, message, {}, 0.0)
+    return diagnostic(row, "blocked", rule, code, message, {}, 0.0, **extra)
 
 
 def diagnostic(row: dict[str, Any], action: str, rule: str, code: str, message: str, values: dict[str, float | None], stake: float, **extra: Any) -> dict[str, Any]:
@@ -158,6 +159,46 @@ def diagnostic(row: dict[str, Any], action: str, rule: str, code: str, message: 
         "message": message, "inputs": values,
         "recommended_paper_stake_fraction": stake, **extra,
     }
+
+
+def contender_pool(source_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return an independent top-three WIN-probability observation pool."""
+    ranked: list[tuple[float, int, int, dict[str, Any]]] = []
+    for index, row in enumerate(source_rows):
+        probability = first_number(row, "calibrated_win_probability", "predicted_win_probability", "win_probability")
+        if probability is None or not 0.0 <= probability <= 1.0:
+            continue
+        rank = int(finite(row.get("rank")) or 10**9)
+        ranked.append((-probability, rank, index, row))
+    ranked.sort(key=lambda item: item[:3])
+    return [
+        {
+            "contender_rank": position,
+            "horse_no": row.get("horse_no"),
+            "horse_name": row.get("horse_name"),
+            "predicted_win_probability": first_number(row, "calibrated_win_probability", "predicted_win_probability", "win_probability"),
+            "predicted_place_probability": first_number(row, "predicted_place_probability", "place_probability"),
+            "source_rank": row.get("rank"),
+            "role": "contender_pool_place_observation",
+        }
+        for position, (_, _, _, row) in enumerate(ranked[:3], start=1)
+    ]
+
+
+def win_margin(source_rows: list[dict[str, Any]]) -> tuple[float | None, float | None, float | None]:
+    values = sorted(
+        [p for row in source_rows if (p := first_number(row, "calibrated_win_probability", "predicted_win_probability", "win_probability")) is not None],
+        reverse=True,
+    )
+    if len(values) < 2:
+        return values[0] if values else None, values[1] if len(values) > 1 else None, None
+    return values[0], values[1], values[0] - values[1]
+
+
+def low_margin_decision(row: dict[str, Any], values: dict[str, float | None], delta_p: float | None, threshold: float) -> dict[str, Any]:
+    code = "BLOCKED_LOW_MARGIN" if delta_p is not None and delta_p < threshold else "SUPPRESSED_HIGH_ENTROPY"
+    message = (f"WIN 阻斷：前兩名勝率差 ΔP={delta_p:.6f} 低於門檻 {threshold:.6f}；保留三甲候選池，不分配 WIN 倉位。" if delta_p is not None else "WIN 阻斷：前兩名有效勝率不足，無法通過 margin check；保留三甲候選池。")
+    return block_row(row, code=code, rule="RULE_WIN_MARGIN_CHECK", message=message, win_margin_delta_p=delta_p, min_delta_p=threshold, decision_scope="WIN")
 
 
 def standard_decision(row: dict[str, Any], values: dict[str, float | None]) -> dict[str, Any]:
@@ -265,6 +306,8 @@ def project_prediction(raw_prediction: dict[str, Any], safety_gate: dict[str, An
         raise ProjectionError("prediction.predictions must be a list of objects")
     mode, gate_reasons = gate_mode(safety_gate)
     rows = deepcopy(source_rows)
+    pool = contender_pool(source_rows)
+    top1_probability, top2_probability, margin_delta_p = win_margin(source_rows)
     records: list[dict[str, Any]] = []
     for row in rows:
         if mode == MODE_BLOCKED:
@@ -276,6 +319,8 @@ def project_prediction(raw_prediction: dict[str, Any], safety_gate: dict[str, An
             records.append(block_row(row, code=SUPPRESSED_ODDS_INCOMPLETE, rule="P0_ROW_001", message="決策輸入不完整或無效：" + ",".join(invalid)))
         elif mode == MODE_STANDARD:
             records.append(standard_decision(row, values))
+        elif margin_delta_p is None or margin_delta_p < MIN_WIN_MARGIN_P:
+            records.append(low_margin_decision(row, values, margin_delta_p, MIN_WIN_MARGIN_P))
         else:
             records.append(conservative_decision(row, values, gate_reasons))
     if mode == MODE_CONSERVATIVE:
@@ -289,14 +334,18 @@ def project_prediction(raw_prediction: dict[str, Any], safety_gate: dict[str, An
         "reason_codes": gate_reasons, "hard_win_cap_fraction": WIN_KELLY_HARD_CAP,
         "conservative_paper_cap_fraction": CONSERVATIVE_PAPER_CAP, "paper_min_stake_fraction": PAPER_MIN_STAKE_FRACTION,
         "paper_floor_min_ev": MIN_EV_FOR_PAPER_FLOOR, "conservative_min_win_probability": CONSERVATIVE_MIN_WIN_PROBABILITY,
+        "min_win_margin_p": MIN_WIN_MARGIN_P, "win_margin_delta_p": margin_delta_p,
+        "win_margin_top1_probability": top1_probability, "win_margin_top2_probability": top2_probability,
         "generated_at_hkt": generated_at_hkt or datetime.now(timezone.utc).astimezone(HK_TZ).isoformat(timespec="seconds"),
         "policy_notice": "僅 paper trading；不會下單或改寫模型機率、EV 原值、N6/V10 特徵。",
     }
     output["decision_diagnostics"] = {
-        "schema_version": "v10_decision_diagnostics_v1", "records": records,
-        "counts": {"approved": sum(r["decision_action"] in {"approved", "approved_conservative_paper"} for r in records), "blocked": sum(r["decision_action"] == "blocked" for r in records), "buffer_only": sum(r["decision_action"] == "buffer_only" for r in records), "total": len(records)},
+        "schema_version": "v10_decision_diagnostics_v2", "records": records,
+        "counts": {"approved": sum(r["decision_action"] in {"approved", "approved_conservative_paper"} for r in records), "blocked": sum(r["decision_action"] == "blocked" for r in records), "buffer_only": sum(r["decision_action"] == "buffer_only" for r in records), "margin_blocked": sum(r["reason_code"] in {"BLOCKED_LOW_MARGIN", "SUPPRESSED_HIGH_ENTROPY"} for r in records), "total": len(records)},
         "fatal_gate": mode == MODE_BLOCKED,
+        "win_margin_check": {"rule_id": "RULE_WIN_MARGIN_CHECK", "min_delta_p": MIN_WIN_MARGIN_P, "delta_p": margin_delta_p, "status": "passed" if margin_delta_p is not None and margin_delta_p >= MIN_WIN_MARGIN_P else "blocked"},
     }
+    output["contender_pool"] = pool
     output["effective_projection"] = {"status": "ready" if mode == MODE_STANDARD else ("conservative_paper_only" if mode == MODE_CONSERVATIVE else "not_ready"), "source_layer": "prediction.json", "decision_layer": "p0_safety_gate.json", "raw_prediction_unchanged": True}
     return output
 
